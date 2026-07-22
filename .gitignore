@@ -1,0 +1,22 @@
+# local search index (rebuildable)
+*.db
+*.db-shm
+*.db-wal
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# scratch
+testdocs/
+*.tmp

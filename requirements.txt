@@ -1,0 +1,11 @@
+# WaraqVault search engine — dependencies
+# (SQLite + FTS5 come with Python's stdlib sqlite3, no install needed)
+
+PyMuPDF>=1.24        # PDF text extraction (imported as: fitz)
+python-docx>=1.1     # DOCX text extraction
+
+# --- planned (not required by the current engine) ---
+# fastapi>=0.110      # local web server
+# uvicorn>=0.29       # ASGI server to run FastAPI
+# easyocr>=1.7        # OCR for scanned images (Arabic + English)   -- or:
+# pytesseract>=0.3    # lightweight OCR (needs the Tesseract binary + Arabic pack)

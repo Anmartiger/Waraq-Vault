@@ -92,11 +92,10 @@ python engine/waraq.py search "أرشيف"       # search in Arabic or English
 
 ## Team
 
-- **Tiger** — the engine: parsing, Arabic normalization, the full schema + FTS5 index, and search.
-- **Little Elephant** — the shell: local FastAPI server, web UI + drag-and-drop, and OCR integration.
+- **AnmarTiger** — the engine: parsing, Arabic normalization, the full schema + FTS5 index, and search.
+- **Link-Top** — the shell: local FastAPI server, web UI + drag-and-drop, and OCR integration.
 
-The interface between them is a small Python module (the engine) that owns the database; the UI and
-OCR call its functions and never touch SQL directly. See [`docs/for-ghassan.md`](docs/for-ghassan.md).
+
 
 ## License
 

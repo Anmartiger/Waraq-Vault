@@ -1,6 +1,6 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.templating import Jinja2Templates
 import uvicorn
 
 app = FastAPI(title="WaraqVault API")
@@ -8,10 +8,21 @@ app = FastAPI(title="WaraqVault API")
 # 1. ربط مجلد الواجهة الذي صممه Tiger
 app.mount("/static", StaticFiles(directory="ui"), name="static")
 
+# إعداد محرك القوالب لكي يفهم الأقواس {{ }}
+templates = Jinja2Templates(directory="ui")
+
 # 2. عرض الصفحة الرئيسية
 @app.get("/")
-async def serve_ui():
-    return FileResponse("ui/index.html")
+async def serve_ui(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "Q": "",
+            "STATUS": "جاهز للعمل",
+            "RESULTS": ""
+        }
+    )
 
 # 3. مسار وهمي للبحث (إلى أن يتم ربطه بمحرك Tiger)
 @app.get("/search")

@@ -5,3 +5,4 @@ easyocr==1.7.2           # AI Engine for Optical Character Recognition (Images)
 pymupdf==1.28.0          # Library to extract text from PDF files
 python-docx==1.2.0       # Library to extract text from Word documents (DOCX)
 Jinja2==3.1.6            # Templating engine to render the frontend HTML UI
+simpleitk==2.3.1         # Required by EasyOCR backend to prevent missing ITK errors

@@ -84,7 +84,7 @@ python engine/waraq.py search "أرشيف"       # search in Arabic or English
 
 - [x] Arabic normalization (applied at index **and** query time)
 - [x] SQLite **FTS5** index + ranked search with snippets
-- [ ] PDF / DOCX / TXT parsing
+- [x] PDF / DOCX / TXT parsing
 - [x] Themed web UI design
 - [x] FastAPI server wiring the UI to the engine
 - [x] Drag-and-drop ingest

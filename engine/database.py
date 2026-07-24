@@ -71,8 +71,8 @@ def insert_document(filename: str, content_type: str, raw_text: str):
     finally:
         con.close()
 
-# أقصى عدد أسطر مطابقة يتم إبرازها لكل مستند (للحفاظ على حجم الرد معقولاً)
-_HIGHLIGHT_CAP = 60
+# أقصى عدد أسطر مطابقة تُرسَل لكل مستند (سقف أمان؛ زر "Show more" في الواجهة يعرضها كلها)
+_HIGHLIGHT_CAP = 1000
 
 def _highlight_line(line: str, tokens: list) -> str:
     """إحاطة الكلمات المطابقة داخل السطر بوسم <b> اعتماداً على خوارزمية التطبيع نفسها."""

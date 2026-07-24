@@ -87,8 +87,8 @@ python engine/waraq.py search "أرشيف"       # search in Arabic or English
 - [x] PDF / DOCX / TXT parsing
 - [x] Themed web UI design
 - [ ] FastAPI server wiring the UI to the engine
-- [ ] Drag-and-drop ingest
-- [ ] OCR for scanned images
+- [x] Drag-and-drop ingest
+- [x] OCR for scanned images
 
 ## Team
 

@@ -3,12 +3,20 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 from engine.ocr_engine import reader, extract_text_from_image
+from engine.pdf_engine import process_hybrid_pdf
+from engine.database import init_db, insert_document, search_documents
+from contextlib import asynccontextmanager
 import uvicorn
 import os
 import uuid
-from engine.pdf_engine import process_hybrid_pdf
 
-app = FastAPI(title="WaraqVault API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # تهيئة قاعدة البيانات وبناء جداول FTS5 فور إقلاع الخادم
+    init_db()  
+    yield
+
+app = FastAPI(title="WaraqVault API", lifespan=lifespan)
 
 # 1. ربط مجلد الواجهة الذي صممه Tiger
 app.mount("/static", StaticFiles(directory="ui"), name="static")
@@ -34,17 +42,17 @@ async def system_status():
     """مسار لتتبع حالة النظام وتوجيه الفريق"""
     return {
         "ingestion_pipeline": "Online - EasyOCR is active and working.",
-        "search_engine": "Offline - Awaiting Tiger to implement SQLite FTS5.",
-        "feedback": "OCR extracts RTL Arabic text in reverse order. DO NOT FIX IT. The keywords (tokens) are present and valid for Full-Text Search indexing."
+        "search_engine": "Online - SQLite FTS5 index is active and receiving data.",
+        "feedback": "OCR extracts RTL Arabic text in reverse order. DO NOT FIX IT. Tokens are valid for indexing."
     }
 
-# 3. مسار وهمي للبحث (إلى أن يتم ربطه بمحرك Tiger)
 @app.get("/search")
-async def search_documents(q: str):
-    # لاحقاً سيتم استدعاء دوال Tiger هنا
-    return {"query": q, "results": [f"نتيجة وهمية لـ: {q}", "نتيجة أخرى"]}
+async def search(q: str):
+    if not q or len(q) < 2:
+        return {"results": []}
+    results = search_documents(q)
+    return {"query": q, "count": len(results), "results": results}
 
-# 4. مسار وهمي للرفع (هنا سيعمل الفيل على دمج EasyOCR لاحقاً)
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     # 1. الرفض السريع (Fail Fast): الآن يدعم الصور والـ PDF
@@ -71,10 +79,11 @@ async def upload_document(file: UploadFile = File(...)):
                 buffer.write(await file.read())
             
             # إرسال الصورة لمحرك OCR في خيط منفصل
-            # إرسال الصورة لمحرك OCR في خيط منفصل
             extracted_text = await run_in_threadpool(extract_text_from_image, temp_file_path)
 
-        return {"filename": file.filename, "extracted_text": extracted_text}
+        # بعد الانتهاء من run_in_threadpool واستخراج النص (extracted_text)
+        insert_document(file.filename, file.content_type, extracted_text)
+        return {"filename": file.filename, "status": "تمت المعالجة والفهرسة بنجاح","extracted_text": extracted_text}
 
     except Exception as e:
         # التقاط أي انهيار وإعادته كرسالة واضحة

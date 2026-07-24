@@ -74,8 +74,10 @@
   .line{display:flex;gap:12px;align-items:baseline;padding:7px 4px;border-bottom:1px solid #EFE7D6;}
   .line:last-child{border-bottom:none;}
   .line:hover{background:var(--cream);}
-  .lineno{flex:0 0 auto;min-width:46px;text-align:end;user-select:none;
-    font:700 12px/1.7 Consolas,"Courier New",ui-monospace,monospace;color:var(--brass);}
+  .loc{flex:0 0 auto;min-width:52px;text-align:end;user-select:none;padding-top:1px;
+    font-family:Consolas,"Courier New",ui-monospace,monospace;line-height:1.3;}
+  .loc .pg{display:block;font-size:11px;font-weight:700;color:var(--brassd);}
+  .loc .ln{display:block;font-size:11.5px;font-weight:700;color:var(--brass);}
   .linetext{flex:1;min-width:0;font-size:15px;color:var(--body);word-break:break-word;}
   .linetext mark{background:var(--brassl);color:var(--ink);padding:0 3px;border-radius:4px;font-weight:700;}
   .more{font-size:12.5px;color:var(--mute);padding:9px 4px 2px;font-style:italic;}
@@ -187,8 +189,11 @@
       var body;
       if (matches.length) {
         var rows = matches.map(function (m) {
+          var loc = (m.page != null ? '<span class="pg">p.' + m.page + '</span>' : "") +
+                    '<span class="ln">L' + m.line + '</span>';
+          var title = (m.page != null ? "Page " + m.page + ", line " + m.line : "Line " + m.line);
           return '<div class="line" dir="auto">' +
-                   '<span class="lineno" title="Line ' + m.line + '">' + m.line + '</span>' +
+                   '<span class="loc" title="' + title + '">' + loc + '</span>' +
                    '<span class="linetext">' + renderHighlighted(m.text) + '</span>' +
                  '</div>';
         }).join("");

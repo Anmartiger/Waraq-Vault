@@ -84,21 +84,32 @@ def _highlight_line(line: str, tokens: list) -> str:
         return word
     return re.sub(r"\S+", repl, line)
 
+# علامة بداية الصفحة التي يضيفها محرك الـ PDF (مثال: "--- صفحة 12 ---")
+_PAGE_MARKER = re.compile(r"^\s*---\s*صفحة\s*(\d+)\s*---\s*$")
+
 def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP):
     """
     البحث عن كل الأسطر التي تحتوي على كلمات البحث.
-    يعيد (قائمة الأسطر المطابقة مع رقم كل سطر وإبراز الكلمات، العدد الكلي للمطابقات).
+    يعيد (قائمة الأسطر المطابقة مع رقم السطر ورقم صفحته إن توفّرت، العدد الكلي للمطابقات).
     """
     matches = []
     total = 0
+    page = None  # يبقى None للصور (لا تحتوي علامات صفحات)
     for i, line in enumerate((raw_text or "").split("\n"), start=1):
+        marker = _PAGE_MARKER.match(line)
+        if marker:
+            page = int(marker.group(1))
+            continue  # لا نعتبر سطر العلامة نفسه نتيجة بحث
         if not line.strip():
             continue
         norm_line = normalize(line)
         if any(tok in norm_line for tok in tokens):
             total += 1
             if len(matches) < cap:
-                matches.append({"line": i, "text": _highlight_line(line.strip(), tokens)})
+                entry = {"line": i, "text": _highlight_line(line.strip(), tokens)}
+                if page is not None:
+                    entry["page"] = page
+                matches.append(entry)
     return matches, total
 
 def search_documents(query: str, limit: int = 20) -> list:

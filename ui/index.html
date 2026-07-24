@@ -72,7 +72,7 @@
   .lines{border-top:1px solid var(--line);}
   .lines.expanded{max-height:460px;overflow:auto;}
   .lines .extra{display:none;}
-  .lines.expanded .extra{display:flex;}
+  .lines .extra.shown{display:flex;}
   .line{display:flex;gap:12px;align-items:baseline;padding:7px 4px;border-bottom:1px solid #EFE7D6;}
   .line:last-child{border-bottom:none;}
   .line:hover{background:var(--cream);}
@@ -154,6 +154,7 @@
     var fileInput = document.getElementById("file");
 
     var ARABIC = /[؀-ۿ]/;
+    var BATCH = 50;   // "Show more" reveals this many additional lines per click
 
     function escapeHtml(s) {
       return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -205,7 +206,7 @@
         }).join("");
         var hidden = matches.length - INITIAL;
         var btn = hidden > 0
-          ? '<button class="showmore" type="button" data-count="' + hidden + '">Show ' + hidden + ' more</button>'
+          ? '<button class="showmore" type="button" data-mode="more">Show ' + Math.min(BATCH, hidden) + ' more</button>'
           : "";
         // Only when the true total exceeds the safety cap we were able to send.
         var capnote = (total > matches.length)
@@ -272,13 +273,34 @@
       timer = setTimeout(function () { runSearch(input.value); }, 300);
     });
 
-    // Show more / Show less — reveal every matching line for a document.
+    // Show more / Show less — reveal matching lines BATCH at a time.
     resultsEl.addEventListener("click", function (e) {
       var btn = e.target.closest && e.target.closest(".showmore");
       if (!btn) return;
       var lines = btn.previousElementSibling;
-      var open = lines.classList.toggle("expanded");
-      btn.textContent = open ? "Show less" : ("Show " + btn.getAttribute("data-count") + " more");
+      var i;
+
+      if (btn.getAttribute("data-mode") === "less") {          // collapse back to the first INITIAL
+        var shownEls = lines.querySelectorAll(".line.extra.shown");
+        for (i = 0; i < shownEls.length; i++) shownEls[i].classList.remove("shown");
+        lines.classList.remove("expanded");
+        btn.setAttribute("data-mode", "more");
+        btn.textContent = "Show " + Math.min(BATCH, shownEls.length) + " more";
+        return;
+      }
+
+      var hiddenEls = lines.querySelectorAll(".line.extra:not(.shown)");
+      var reveal = Math.min(BATCH, hiddenEls.length);
+      for (i = 0; i < reveal; i++) hiddenEls[i].classList.add("shown");
+      lines.classList.add("expanded");
+
+      var left = hiddenEls.length - reveal;
+      if (left > 0) {
+        btn.textContent = "Show " + Math.min(BATCH, left) + " more";
+      } else {
+        btn.setAttribute("data-mode", "less");
+        btn.textContent = "Show less";
+      }
     });
 
     // ---- Upload: POST /upload (multipart, field "file") ----

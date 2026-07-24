@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-BE9540">
+  <img alt="License: AGPL v3" src="https://img.shields.io/badge/License-AGPL%20v3-BE9540">
   <img alt="Offline-first" src="https://img.shields.io/badge/Offline--first-0E3536">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-1C6E74">
   <img alt="SQLite FTS5" src="https://img.shields.io/badge/SQLite-FTS5-1C6E74">
@@ -88,4 +88,7 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 
 ## License
 
-[MIT](LICENSE) &mdash; free and open source.
+[AGPL-3.0](LICENSE) &mdash; free and open source (copyleft).
+
+If you run a modified version of WaraqVault as a network service, the AGPL requires you to
+offer its users the corresponding source code of your modified version.

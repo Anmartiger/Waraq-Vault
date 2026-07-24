@@ -62,6 +62,24 @@
   .badge.pdf,.badge.docx,.badge.txt{background:#EAF1F0;color:var(--mute);}
   .snippet{direction:auto;font-size:16px;color:var(--body);}
   .snippet mark{background:var(--brassl);color:var(--ink);padding:0 3px;border-radius:4px;font-weight:600;}
+
+  /* results summary + matched lines */
+  .summary{font-size:14px;font-weight:700;color:var(--ink);margin:18px 2px 2px;}
+  .summary .muted{font-weight:400;color:var(--mute);}
+  .card .meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;}
+  .hits{margin-inline-start:auto;font-size:12px;font-weight:700;color:var(--brassd);
+    background:#FBF0D8;padding:3px 11px;border-radius:999px;white-space:nowrap;}
+  .lines{border-top:1px solid var(--line);}
+  .lines.scroll{max-height:430px;overflow:auto;}
+  .line{display:flex;gap:12px;align-items:baseline;padding:7px 4px;border-bottom:1px solid #EFE7D6;}
+  .line:last-child{border-bottom:none;}
+  .line:hover{background:var(--cream);}
+  .lineno{flex:0 0 auto;min-width:46px;text-align:end;user-select:none;
+    font:700 12px/1.7 Consolas,"Courier New",ui-monospace,monospace;color:var(--brass);}
+  .linetext{flex:1;min-width:0;font-size:15px;color:var(--body);word-break:break-word;}
+  .linetext mark{background:var(--brassl);color:var(--ink);padding:0 3px;border-radius:4px;font-weight:700;}
+  .more{font-size:12.5px;color:var(--mute);padding:9px 4px 2px;font-style:italic;}
+
   .card .actions{margin-top:12px;}
   .open{
     display:inline-block;font-size:13px;font-weight:700;padding:7px 15px;border-radius:9px;
@@ -136,10 +154,10 @@
       });
     }
 
-    // The API wraps matches in <b>…</b>. Escape the whole snippet first (so any
+    // The API wraps matched words in <b>…</b>. Escape everything first (so any
     // markup inside the document text is neutralised), then re-enable only those
-    // highlight markers as <mark> to match the theme.
-    function renderSnippet(s) {
+    // highlight markers as themed <mark>.
+    function renderHighlighted(s) {
       return escapeHtml(s)
         .replace(/&lt;b&gt;/g, "<mark>")
         .replace(/&lt;\/b&gt;/g, "</mark>");
@@ -161,15 +179,37 @@
     }
 
     function cardHtml(r) {
-      var ar = ARABIC.test(r.snippet || "") || ARABIC.test(r.filename || "");
+      var matches = r.matches || [];
+      var total = (r.match_count != null) ? r.match_count : matches.length;
+      var sample = (matches[0] ? matches[0].text : "") + " " + (r.filename || "") + " " + (r.snippet || "");
+      var ar = ARABIC.test(sample);
+
+      var body;
+      if (matches.length) {
+        var rows = matches.map(function (m) {
+          return '<div class="line" dir="auto">' +
+                   '<span class="lineno" title="Line ' + m.line + '">' + m.line + '</span>' +
+                   '<span class="linetext">' + renderHighlighted(m.text) + '</span>' +
+                 '</div>';
+        }).join("");
+        var more = (total > matches.length)
+          ? '<div class="more">+ ' + (total - matches.length) + ' more matches not shown</div>'
+          : "";
+        body = '<div class="lines' + (matches.length > 6 ? " scroll" : "") + '">' + rows + "</div>" + more;
+      } else {
+        // Fallback: no per-line matches returned — show the single API snippet.
+        body = '<div class="snippet">' + renderHighlighted(r.snippet) + "</div>";
+      }
+
       return (
         '<div class="card">' +
-          '<div class="top">' +
+          '<div class="meta">' +
             '<span class="fname">' + escapeHtml(r.filename) + "</span>" +
             '<span class="badge ' + (ar ? "ar" : "") + '">' + (ar ? "AR" : "EN") + "</span>" +
             '<span class="badge">' + escapeHtml(typeLabel(r.content_type)) + "</span>" +
+            '<span class="hits">' + total + " match" + (total === 1 ? "" : "es") + "</span>" +
           "</div>" +
-          '<div class="snippet">' + renderSnippet(r.snippet) + "</div>" +
+          body +
         "</div>"
       );
     }
@@ -189,12 +229,20 @@
           var list = (data && data.results) || [];
           if (!list.length) {
             showEmpty("No results for “" + q + "”");
-            setStatus("0 results");
+            setStatus("No matches for <b>" + escapeHtml(q) + "</b>");
             return;
           }
-          resultsEl.innerHTML = list.map(cardHtml).join("");
-          var n = (data.count != null) ? data.count : list.length;
-          setStatus(n + " result" + (n === 1 ? "" : "s") + " for <b>" + escapeHtml(q) + "</b>");
+          var totalMatches = list.reduce(function (a, r) {
+            return a + ((r.match_count != null) ? r.match_count : (r.matches ? r.matches.length : 1));
+          }, 0);
+          var docWord = list.length === 1 ? "document" : "documents";
+          var hitWord = totalMatches === 1 ? "match" : "matches";
+          resultsEl.innerHTML =
+            '<div class="summary">' + totalMatches + " " + hitWord +
+              ' <span class="muted">in ' + list.length + " " + docWord +
+              " for “" + escapeHtml(q) + "”</span></div>" +
+            list.map(cardHtml).join("");
+          setStatus(totalMatches + " " + hitWord + " in " + list.length + " " + docWord);
         })
         .catch(function (err) {
           setStatus("Search failed: " + escapeHtml(err.message));

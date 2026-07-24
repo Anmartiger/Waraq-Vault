@@ -71,30 +71,72 @@ def insert_document(filename: str, content_type: str, raw_text: str):
     finally:
         con.close()
 
+# أقصى عدد أسطر مطابقة يتم إبرازها لكل مستند (للحفاظ على حجم الرد معقولاً)
+_HIGHLIGHT_CAP = 60
+
+def _highlight_line(line: str, tokens: list) -> str:
+    """إحاطة الكلمات المطابقة داخل السطر بوسم <b> اعتماداً على خوارزمية التطبيع نفسها."""
+    def repl(match):
+        word = match.group(0)
+        norm_word = normalize(word)
+        if norm_word and any(tok in norm_word for tok in tokens):
+            return f"<b>{word}</b>"
+        return word
+    return re.sub(r"\S+", repl, line)
+
+def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP):
+    """
+    البحث عن كل الأسطر التي تحتوي على كلمات البحث.
+    يعيد (قائمة الأسطر المطابقة مع رقم كل سطر وإبراز الكلمات، العدد الكلي للمطابقات).
+    """
+    matches = []
+    total = 0
+    for i, line in enumerate((raw_text or "").split("\n"), start=1):
+        if not line.strip():
+            continue
+        norm_line = normalize(line)
+        if any(tok in norm_line for tok in tokens):
+            total += 1
+            if len(matches) < cap:
+                matches.append({"line": i, "text": _highlight_line(line.strip(), tokens)})
+    return matches, total
+
 def search_documents(query: str, limit: int = 20) -> list:
-    """البحث الذكي باستخدام FTS5 وخوارزمية التطبيع"""
+    """البحث الذكي باستخدام FTS5 — يعيد لكل مستند جميع الأسطر المطابقة مع أرقامها"""
     norm_query = normalize(query)
     # تحويل كلمات البحث إلى صيغة يفهمها FTS5 (كل كلمة يجب أن تحتوي على المعامل *)
     tokens = [t for t in re.split(r"\s+", norm_query) if t]
     if not tokens:
         return []
-    
+
     match_query = " ".join(f'"{t}"*' for t in tokens)
-    
+
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row  # لإرجاع النتائج كقواميس (Dictionaries)
     try:
         cursor = con.execute("""
-            SELECT d.filename, d.content_type, 
+            SELECT d.filename, d.content_type, d.raw_text,
                    snippet(documents_fts, 0, '<b>', '</b>', '...', 15) as snippet,
-                   bm25(documents_fts) AS rank 
-            FROM documents_fts 
-            JOIN documents d ON d.id = documents_fts.rowid 
-            WHERE documents_fts MATCH ? 
-            ORDER BY rank 
+                   bm25(documents_fts) AS rank
+            FROM documents_fts
+            JOIN documents d ON d.id = documents_fts.rowid
+            WHERE documents_fts MATCH ?
+            ORDER BY rank
             LIMIT ?
         """, (match_query, limit))
-        
-        return [dict(row) for row in cursor.fetchall()]
+
+        results = []
+        for row in cursor.fetchall():
+            # raw_text يُستخدم داخلياً فقط لاستخراج الأسطر ولا يُعاد كاملاً في الرد
+            matches, total = _find_line_matches(row["raw_text"], tokens)
+            results.append({
+                "filename": row["filename"],
+                "content_type": row["content_type"],
+                "snippet": row["snippet"],
+                "rank": row["rank"],
+                "matches": matches,
+                "match_count": total,
+            })
+        return results
     finally:
         con.close()

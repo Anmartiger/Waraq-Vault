@@ -71,6 +71,21 @@
 
   .empty{text-align:center;color:var(--mute);padding:46px 20px;}
   .empty .big{font-size:44px;margin-bottom:8px;filter:grayscale(.2);}
+
+  /* uploader */
+  .uploader{
+    border:2px dashed var(--brass);background:var(--cream);border-radius:14px;
+    padding:22px 18px;text-align:center;cursor:pointer;color:var(--ink);
+    transition:background .15s,border-color .15s;margin:6px 0 4px;user-select:none;
+  }
+  .uploader:hover{background:#fff;}
+  .uploader:focus-visible{outline:2px solid var(--teal);outline-offset:2px;}
+  .uploader.drag{background:#FBF0D8;border-color:var(--brassd);}
+  .uploader.busy{opacity:.65;pointer-events:none;}
+  .uploader .up-icon{font-size:26px;line-height:1;margin-bottom:6px;}
+  .uploader .up-title{font-weight:700;font-size:15px;}
+  .uploader .up-sub{font-size:12px;color:var(--mute);margin-top:3px;direction:rtl;}
+
   footer{text-align:center;color:var(--mute);font-size:12px;padding:20px;}
   footer .dot{color:var(--brass);}
 </style>
@@ -82,17 +97,167 @@
   </header>
 
   <div class="wrap">
+    <div id="drop" class="uploader" role="button" tabindex="0" aria-label="Upload a document">
+      <input id="file" type="file" accept="image/*,application/pdf" hidden />
+      <div class="up-icon">⬆️</div>
+      <div class="up-title">Drop a file here, or click to upload</div>
+      <div class="up-sub">PDF أو صورة (PNG / JPG) — تتم القراءة والفهرسة تلقائياً</div>
+    </div>
+
     <form class="search" method="get" action="/search">
       <input type="text" name="q" value="{{Q}}" dir="auto" autofocus
              placeholder="search...  /  Search your documents…" />
       <button type="submit">search</button>
     </form>
 
-    <div class="status">{{STATUS}}</div>
+    <div class="status" id="status">{{STATUS}}</div>
 
-    {{RESULTS}}
+    <div id="results"></div>
   </div>
 
   <footer>WaraqVault <span class="dot">·</span> It operates entirely locally.<span class="dot">·</span> Fully offline</footer>
+
+  <script>
+  (function () {
+    "use strict";
+
+    var statusEl  = document.getElementById("status");
+    var resultsEl = document.getElementById("results");
+    var form      = document.querySelector("form.search");
+    var input     = form.querySelector('input[name="q"]');
+    var drop      = document.getElementById("drop");
+    var fileInput = document.getElementById("file");
+
+    var ARABIC = /[؀-ۿ]/;
+
+    function escapeHtml(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+
+    // The API wraps matches in <b>…</b>. Escape the whole snippet first (so any
+    // markup inside the document text is neutralised), then re-enable only those
+    // highlight markers as <mark> to match the theme.
+    function renderSnippet(s) {
+      return escapeHtml(s)
+        .replace(/&lt;b&gt;/g, "<mark>")
+        .replace(/&lt;\/b&gt;/g, "</mark>");
+    }
+
+    function typeLabel(ct) {
+      if (!ct) return "FILE";
+      if (ct.indexOf("pdf") > -1) return "PDF";
+      if (ct.indexOf("image/") === 0) return "IMG";
+      if (ct.indexOf("word") > -1) return "DOCX";
+      return ct.split("/").pop().toUpperCase();
+    }
+
+    function setStatus(html) { statusEl.innerHTML = html; }
+
+    function showEmpty(msg) {
+      resultsEl.innerHTML =
+        '<div class="empty"><div class="big">🔍</div><div>' + escapeHtml(msg) + "</div></div>";
+    }
+
+    function cardHtml(r) {
+      var ar = ARABIC.test(r.snippet || "") || ARABIC.test(r.filename || "");
+      return (
+        '<div class="card">' +
+          '<div class="top">' +
+            '<span class="fname">' + escapeHtml(r.filename) + "</span>" +
+            '<span class="badge ' + (ar ? "ar" : "") + '">' + (ar ? "AR" : "EN") + "</span>" +
+            '<span class="badge">' + escapeHtml(typeLabel(r.content_type)) + "</span>" +
+          "</div>" +
+          '<div class="snippet">' + renderSnippet(r.snippet) + "</div>" +
+        "</div>"
+      );
+    }
+
+    // ---- Search: GET /search?q=... ----
+    function runSearch(q) {
+      q = (q || "").trim();
+      if (q.length < 2) {
+        showEmpty("Type at least 2 characters to search…");
+        setStatus("Ready");
+        return;
+      }
+      setStatus("Searching for <b>" + escapeHtml(q) + "</b> …");
+      fetch("/search?q=" + encodeURIComponent(q))
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          var list = (data && data.results) || [];
+          if (!list.length) {
+            showEmpty("No results for “" + q + "”");
+            setStatus("0 results");
+            return;
+          }
+          resultsEl.innerHTML = list.map(cardHtml).join("");
+          var n = (data.count != null) ? data.count : list.length;
+          setStatus(n + " result" + (n === 1 ? "" : "s") + " for <b>" + escapeHtml(q) + "</b>");
+        })
+        .catch(function (err) {
+          setStatus("Search failed: " + escapeHtml(err.message));
+        });
+    }
+
+    var timer = null;
+    form.addEventListener("submit", function (e) { e.preventDefault(); runSearch(input.value); });
+    input.addEventListener("input", function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { runSearch(input.value); }, 300);
+    });
+
+    // ---- Upload: POST /upload (multipart, field "file") ----
+    function upload(file) {
+      if (!file) return;
+      var ok = (file.type.indexOf("image/") === 0) || file.type === "application/pdf";
+      if (!ok) { setStatus("Unsupported file — please use a PDF or an image."); return; }
+
+      setStatus("Uploading &amp; processing <b>" + escapeHtml(file.name) + "</b> …");
+      drop.classList.add("busy");
+
+      var fd = new FormData();
+      fd.append("file", file);
+
+      fetch("/upload", { method: "POST", body: fd })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            if (!res.ok) throw new Error((data && data.detail) || ("Upload failed (" + res.status + ")"));
+            return data;
+          });
+        })
+        .then(function (data) {
+          setStatus("✅ Indexed <b>" + escapeHtml(data.filename) + "</b> — you can search it now.");
+          if (input.value.trim().length >= 2) runSearch(input.value);
+        })
+        .catch(function (err) {
+          setStatus("Processing failed: " + escapeHtml(err.message));
+        })
+        .then(function () {
+          drop.classList.remove("busy");
+          fileInput.value = "";
+        });
+    }
+
+    drop.addEventListener("click", function () { fileInput.click(); });
+    drop.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+    });
+    fileInput.addEventListener("change", function () { upload(fileInput.files[0]); });
+
+    ["dragenter", "dragover"].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("drag"); });
+    });
+    ["dragleave", "dragend", "drop"].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove("drag"); });
+    });
+    drop.addEventListener("drop", function (e) {
+      if (e.dataTransfer && e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
+    });
+
+    showEmpty("Start by searching, or upload a new document.");
+  })();
+  </script>
 </body>
 </html>

@@ -1,11 +1,12 @@
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException
+from fastapi import FastAPI, APIRouter, Request, UploadFile, File, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
-from engine.ocr_engine import extract_text_from_image
+from engine.ocr_engine import reader, extract_text_from_image
 import uvicorn
 import os
 import uuid
+from engine.pdf_engine import process_hybrid_pdf
 
 app = FastAPI(title="WaraqVault API")
 
@@ -46,38 +47,43 @@ async def search_documents(q: str):
 # 4. مسار وهمي للرفع (هنا سيعمل الفيل على دمج EasyOCR لاحقاً)
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
-    # 1. التحقق الصارم من نوع الملف (Fail Fast)
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="الملف المرفوع ليس صورة. يدعم النظام الصور فقط حالياً.")
+    # 1. الرفض السريع (Fail Fast): الآن يدعم الصور والـ PDF
+    if not (file.content_type.startswith("image/") or file.content_type == "application/pdf"):
+        raise HTTPException(
+            status_code=400, 
+            detail="الملف المرفوع غير مدعوم. النظام يدعم الصور (PNG/JPG) وملفات PDF فقط حالياً."
+        )
 
-    # 2. حماية الخادم بتوليد اسم عشوائي آمن (UUID) وتجاهل اسم المستخدم
-    safe_filename = f"temp_{uuid.uuid4().hex}.img"
+    temp_file_path = f"temp_{uuid.uuid4()}_{file.filename}"
     
     try:
-        # 3. حفظ الملف
-        with open(safe_filename, "wb") as buffer:
-            buffer.write(await file.read())
-        
-        # 4. تشغيل الـ OCR في Thread منفصل لمنع تجميد الخادم!
-        extracted_text = await run_in_threadpool(extract_text_from_image, safe_filename)
-        
-        return {
-            "status": "success",
-            "filename": file.filename, 
-            "extracted_text": extracted_text
-        }
-        
-    except ValueError as ve:
-        # التقاط الخطأ القادم من محرك الـ OCR
-        raise HTTPException(status_code=500, detail=str(ve))
+        # 2. التوجيه الذكي بناءً على نوع الملف
+        if file.content_type == "application/pdf":
+            # معالجة PDF في الذاكرة (لا نحتاج لحفظ الملف على القرص)
+            file_bytes = await file.read()
+            # إرسال العملية لخيط منفصل (Threadpool) لمنع تجميد الخادم
+            extracted_text = await run_in_threadpool(process_hybrid_pdf, file_bytes, reader)
+            
+        else:
+            # معالجة الصور (بناءً على الهيكل الذي بنيناه سابقاً)
+            # حفظ الصورة مؤقتاً
+            with open(temp_file_path, "wb") as buffer:
+                buffer.write(await file.read())
+            
+            # إرسال الصورة لمحرك OCR في خيط منفصل
+            # إرسال الصورة لمحرك OCR في خيط منفصل
+            extracted_text = await run_in_threadpool(extract_text_from_image, temp_file_path)
+
+        return {"filename": file.filename, "extracted_text": extracted_text}
+
     except Exception as e:
-        # التقاط أي خطأ آخر
-        raise HTTPException(status_code=500, detail=f"حدث خطأ غير متوقع: {str(e)}")
-        
+        # التقاط أي انهيار وإعادته كرسالة واضحة
+        raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء المعالجة: {str(e)}")
+
     finally:
-        # 5. تنظيف إجباري (يُنفذ دائماً سواء نجحت العملية أو فشلت)
-        if os.path.exists(safe_filename):
-            os.remove(safe_filename)
+        # 3. التنظيف الصارم: حذف الملف المؤقت للصورة إذا تم إنشاؤه
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

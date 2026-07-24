@@ -55,20 +55,11 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 | Full-text index (no server) | **SQLite + FTS5** |
 | PDF / DOCX text extraction | **PyMuPDF**, **python-docx** |
 | Arabic normalization | custom layer (index + query time) |
-| Local web UI *(planned)* | **FastAPI** + HTML/CSS/JS |
-| OCR for scans *(planned)* | **EasyOCR / Tesseract** |
+| Local web UI  | **FastAPI** + HTML/CSS/JS |
+| OCR for scans  | **EasyOCR** |
 
 > The search core is **already built and working** &mdash; see [`engine/waraq.py`](engine/waraq.py).
 
-## Quickstart
-
-```bash
-pip install -r requirements.txt
-
-python engine/waraq.py demo                # proof: cross-spelling Arabic search (no files needed)
-python engine/waraq.py index ./my-docs     # index a folder of PDFs / DOCX / TXT
-python engine/waraq.py search "أرشيف"       # search in Arabic or English
-```
 
 ## What's in here
 

@@ -84,18 +84,16 @@ python engine/waraq.py search "أرشيف"       # search in Arabic or English
 
 - [x] Arabic normalization (applied at index **and** query time)
 - [x] SQLite **FTS5** index + ranked search with snippets
-- [x] PDF / DOCX / TXT parsing
+- [ ] PDF / DOCX / TXT parsing
 - [x] Themed web UI design
-- [ ] FastAPI server wiring the UI to the engine
+- [x] FastAPI server wiring the UI to the engine
 - [x] Drag-and-drop ingest
 - [x] OCR for scanned images
 
 ## Team
 
-- **AnmarTiger** — the engine: parsing, Arabic normalization, the full schema + FTS5 index, and search.
-- **Link-Top** — the shell: local FastAPI server, web UI + drag-and-drop, and OCR integration.
-
-
+- **Link-Top** — The Infrastructure & Data Pipeline: Built the core FastAPI backend, hybrid ingestion routing (PyMuPDF & EasyOCR), foundational SQLite FTS5 setup, and endpoint integration.
+- **AnmarTiger** — The Frontend & Search Logic: Developed the Web UI (drag-and-drop), the Arabic normalization algorithm, and advanced FTS5 search mechanics (BM25 ranking, snippet highlighting, and page/line extraction).
 
 ## License
 

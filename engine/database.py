@@ -31,6 +31,7 @@ def init_db():
             content_type TEXT NOT NULL,
             raw_text TEXT NOT NULL,
             normalized_text TEXT NOT NULL,
+            file_hash TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         
@@ -55,19 +56,78 @@ def init_db():
             INSERT INTO documents_fts(rowid, normalized_text) VALUES (new.id, new.normalized_text);
         END;
     """)
+
+    # ترحيل قواعد البيانات القديمة التي أُنشئت قبل إضافة بصمة الملف
+    existing_columns = [row[1] for row in con.execute("PRAGMA table_info(documents)")]
+    if "file_hash" not in existing_columns:
+        con.execute("ALTER TABLE documents ADD COLUMN file_hash TEXT")
+        con.commit()
+        print("ℹ️ Added file_hash column to the existing documents table.")
+
     con.close()
     print("✅ Database and FTS5 Schema initialized successfully.")
 
-def insert_document(filename: str, content_type: str, raw_text: str):
+def insert_document(filename: str, content_type: str, raw_text: str, file_hash: str = None):
     """إدخال مستند جديد إلى قاعدة البيانات"""
     con = sqlite3.connect(DB_PATH)
     try:
         norm_text = normalize(raw_text)
         con.execute(
-            "INSERT INTO documents (filename, content_type, raw_text, normalized_text) VALUES (?, ?, ?, ?)",
-            (filename, content_type, raw_text, norm_text)
+            "INSERT INTO documents (filename, content_type, raw_text, normalized_text, file_hash) VALUES (?, ?, ?, ?, ?)",
+            (filename, content_type, raw_text, norm_text, file_hash)
         )
         con.commit()
+    finally:
+        con.close()
+
+def find_duplicate(filename: str, file_hash: str = None) -> dict:
+    """
+    البحث عن مستند مطابق قبل بدء المعالجة الثقيلة (OCR).
+    الأولوية لتطابق المحتوى (البصمة) لأنه يكشف الملف نفسه حتى لو تغيّر اسمه.
+    """
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    try:
+        if file_hash:
+            row = con.execute(
+                "SELECT id, filename, created_at FROM documents WHERE file_hash = ? ORDER BY id LIMIT 1",
+                (file_hash,)
+            ).fetchone()
+            if row:
+                return {"match": "content", **dict(row)}
+
+        row = con.execute(
+            "SELECT id, filename, created_at FROM documents WHERE filename = ? ORDER BY id LIMIT 1",
+            (filename,)
+        ).fetchone()
+        if row:
+            return {"match": "filename", **dict(row)}
+
+        return None
+    finally:
+        con.close()
+
+def delete_documents(filename: str = None, file_hash: str = None) -> int:
+    """
+    حذف كل المستندات المطابقة بالاسم أو بالبصمة ويعيد عدد الصفوف المحذوفة.
+    زناد docs_ad يتكفّل بإزالتها من فهرس FTS5 تلقائياً.
+    """
+    if not filename and not file_hash:
+        return 0
+
+    conditions, params = [], []
+    if filename:
+        conditions.append("filename = ?")
+        params.append(filename)
+    if file_hash:
+        conditions.append("file_hash = ?")
+        params.append(file_hash)
+
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cursor = con.execute(f"DELETE FROM documents WHERE {' OR '.join(conditions)}", params)
+        con.commit()
+        return cursor.rowcount
     finally:
         con.close()
 

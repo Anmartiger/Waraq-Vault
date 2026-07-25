@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Request, UploadFile, File, HTTPException
+from fastapi import FastAPI, APIRouter, Request, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
@@ -6,11 +6,12 @@ from engine.ocr_engine import reader, extract_text_from_image
 from engine.pdf_engine import process_hybrid_pdf
 from engine.docx_engine import process_docx
 from engine.text_engine import process_txt
-from engine.database import init_db, insert_document, search_documents
+from engine.database import init_db, insert_document, search_documents, find_duplicate, delete_documents
 from contextlib import asynccontextmanager
 import uvicorn
 import os
 import uuid
+import hashlib
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -85,7 +86,7 @@ async def search(q: str):
     return {"query": q, "count": len(results), "results": results}
 
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), overwrite: bool = Form(False)):
     # 1. الرفض السريع (Fail Fast): يدعم الصور و PDF و DOCX والملفات النصية
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext == ".doc" or file.content_type == "application/msword":
@@ -101,38 +102,63 @@ async def upload_document(file: UploadFile = File(...)):
             detail="الملف المرفوع غير مدعوم. النظام يدعم PDF و Word (DOCX) والملفات النصية (TXT) والصور (PNG/JPG)."
         )
 
+    # 2. قراءة الملف مرة واحدة وحساب بصمته لكشف التكرار
+    file_bytes = await file.read()
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # 3. فحص التكرار يسبق المعالجة الثقيلة حتى لا ينتظر المستخدم OCR بلا فائدة
+    duplicate = find_duplicate(file.filename, file_hash)
+    if duplicate and not overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "duplicate",
+                "match": duplicate["match"],          # "content" أو "filename"
+                "filename": duplicate["filename"],
+                "indexed_at": duplicate["created_at"],
+            }
+        )
+
+    replaced = 0
+    if overwrite:
+        # الاستبدال يزيل النسخ القديمة بالاسم وبالبصمة معاً
+        replaced = delete_documents(filename=file.filename, file_hash=file_hash)
+
     temp_file_path = f"temp_{uuid.uuid4()}_{file.filename}"
 
     try:
-        # 2. التوجيه الذكي بناءً على نوع الملف
+        # 4. التوجيه الذكي بناءً على نوع الملف
         if kind == "pdf":
             # معالجة PDF في الذاكرة (لا نحتاج لحفظ الملف على القرص)
-            file_bytes = await file.read()
             # إرسال العملية لخيط منفصل (Threadpool) لمنع تجميد الخادم
             extracted_text = await run_in_threadpool(process_hybrid_pdf, file_bytes, reader)
 
         elif kind == "docx":
             # قراءة DOCX في الذاكرة (فك ضغط الملف قد يستغرق وقتاً لذا نستخدم خيطاً منفصلاً)
-            file_bytes = await file.read()
             extracted_text = await run_in_threadpool(process_docx, file_bytes)
 
         elif kind == "txt":
             # الملفات النصية لا تحتاج معالجة ثقيلة، فقط فك الترميز
-            extracted_text = process_txt(await file.read())
+            extracted_text = process_txt(file_bytes)
 
         else:
             # معالجة الصور (بناءً على الهيكل الذي بنيناه سابقاً)
             # حفظ الصورة مؤقتاً
             with open(temp_file_path, "wb") as buffer:
-                buffer.write(await file.read())
+                buffer.write(file_bytes)
 
             # إرسال الصورة لمحرك OCR في خيط منفصل
             extracted_text = await run_in_threadpool(extract_text_from_image, temp_file_path)
 
         # بعد الانتهاء من run_in_threadpool واستخراج النص (extracted_text)
         stored_type = file.content_type or _FALLBACK_TYPES[kind]
-        insert_document(file.filename, stored_type, extracted_text)
-        return {"filename": file.filename, "status": "تمت المعالجة والفهرسة بنجاح","extracted_text": extracted_text}
+        insert_document(file.filename, stored_type, extracted_text, file_hash)
+        return {
+            "filename": file.filename,
+            "status": "تمت المعالجة والفهرسة بنجاح",
+            "replaced": replaced,
+            "extracted_text": extracted_text,
+        }
 
     except Exception as e:
         # التقاط أي انهيار وإعادته كرسالة واضحة

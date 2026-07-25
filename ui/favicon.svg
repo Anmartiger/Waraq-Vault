@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="WaraqVault">
+  <title>WaraqVault</title>
+  <defs>
+    <linearGradient id="vaultBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#103E40"/>
+      <stop offset=".6" stop-color="#0E3536"/>
+      <stop offset="1" stop-color="#0A2829"/>
+    </linearGradient>
+  </defs>
+
+  <!-- vault backdrop, matching the header gradient -->
+  <rect width="32" height="32" rx="7" fill="url(#vaultBg)"/>
+
+  <!-- sheet of paper (waraq) with a folded corner -->
+  <path d="M8 4.5h12.2l5.3 5.3V26a1.5 1.5 0 0 1-1.5 1.5H8A1.5 1.5 0 0 1 6.5 26V6A1.5 1.5 0 0 1 8 4.5z" fill="#FBF7EF"/>
+  <path d="M20.2 4.5l5.3 5.3h-5.3z" fill="#D8CDB6"/>
+
+  <!-- brass keyhole: the "vault" half of the name -->
+  <circle cx="16" cy="14.6" r="4.4" fill="#BE9540"/>
+  <path d="M14.1 17.4h3.8l1.15 6.4h-6.1z" fill="#BE9540"/>
+</svg>

@@ -1,0 +1,102 @@
+// Rendering of the results list: one card per document, every matching line
+// numbered and highlighted, revealed a batch at a time.
+
+import { ARABIC, escapeHtml, renderHighlighted, typeLabel } from "./utils.js";
+import { resultsEl } from "./dom.js";
+
+var INITIAL = 8;   // lines shown before the first "Show more"
+var BATCH   = 50;  // additional lines revealed per "Show more" click
+
+function cardHtml(r) {
+  var matches = r.matches || [];
+  var total = (r.match_count != null) ? r.match_count : matches.length;
+  var sample = (matches[0] ? matches[0].text : "") + " " + (r.filename || "") + " " + (r.snippet || "");
+  var ar = ARABIC.test(sample);
+
+  var body;
+  if (matches.length) {
+    var rows = matches.map(function (m, idx) {
+      var loc = (m.page != null ? '<span class="pg">p.' + m.page + '</span>' : "") +
+                '<span class="ln">L' + m.line + '</span>';
+      var title = (m.page != null ? "Page " + m.page + ", line " + m.line : "Line " + m.line);
+      return '<div class="line' + (idx >= INITIAL ? " extra" : "") + '" dir="auto">' +
+               '<span class="loc" title="' + title + '">' + loc + '</span>' +
+               '<span class="linetext">' + renderHighlighted(m.text) + '</span>' +
+             '</div>';
+    }).join("");
+    var hidden = matches.length - INITIAL;
+    var btn = hidden > 0
+      ? '<button class="showmore" type="button" data-mode="more">Show ' + Math.min(BATCH, hidden) + ' more</button>'
+      : "";
+    // Only when the true total exceeds the safety cap we were able to send.
+    var capnote = (total > matches.length)
+      ? '<div class="capnote">Showing the first ' + matches.length + " of " + total + " matches.</div>"
+      : "";
+    body = '<div class="lines">' + rows + "</div>" + btn + capnote;
+  } else {
+    // Fallback: no per-line matches returned — show the single API snippet.
+    body = '<div class="snippet">' + renderHighlighted(r.snippet) + "</div>";
+  }
+
+  return (
+    '<div class="card">' +
+      '<div class="meta">' +
+        '<span class="fname">' + escapeHtml(r.filename) + "</span>" +
+        '<span class="badge ' + (ar ? "ar" : "") + '">' + (ar ? "AR" : "EN") + "</span>" +
+        '<span class="badge">' + escapeHtml(typeLabel(r.content_type)) + "</span>" +
+        '<span class="hits">' + total + " match" + (total === 1 ? "" : "es") + "</span>" +
+      "</div>" +
+      body +
+    "</div>"
+  );
+}
+
+// Paints the summary line plus one card per document.
+// Returns the tallies so the caller can mirror them in the status line.
+export function renderResults(list, q) {
+  var totalMatches = list.reduce(function (a, r) {
+    return a + ((r.match_count != null) ? r.match_count : (r.matches ? r.matches.length : 1));
+  }, 0);
+  var docWord = list.length === 1 ? "document" : "documents";
+  var hitWord = totalMatches === 1 ? "match" : "matches";
+
+  resultsEl.innerHTML =
+    '<div class="summary">' + totalMatches + " " + hitWord +
+      ' <span class="muted">in ' + list.length + " " + docWord +
+      " for “" + escapeHtml(q) + "”</span></div>" +
+    list.map(cardHtml).join("");
+
+  return { totalMatches: totalMatches, docs: list.length, docWord: docWord, hitWord: hitWord };
+}
+
+// Show more / Show less — reveal matching lines BATCH at a time.
+export function initShowMore() {
+  resultsEl.addEventListener("click", function (e) {
+    var btn = e.target.closest && e.target.closest(".showmore");
+    if (!btn) return;
+    var lines = btn.previousElementSibling;
+    var i;
+
+    if (btn.getAttribute("data-mode") === "less") {          // collapse back to the first INITIAL
+      var shownEls = lines.querySelectorAll(".line.extra.shown");
+      for (i = 0; i < shownEls.length; i++) shownEls[i].classList.remove("shown");
+      lines.classList.remove("expanded");
+      btn.setAttribute("data-mode", "more");
+      btn.textContent = "Show " + Math.min(BATCH, shownEls.length) + " more";
+      return;
+    }
+
+    var hiddenEls = lines.querySelectorAll(".line.extra:not(.shown)");
+    var reveal = Math.min(BATCH, hiddenEls.length);
+    for (i = 0; i < reveal; i++) hiddenEls[i].classList.add("shown");
+    lines.classList.add("expanded");
+
+    var left = hiddenEls.length - reveal;
+    if (left > 0) {
+      btn.textContent = "Show " + Math.min(BATCH, left) + " more";
+    } else {
+      btn.setAttribute("data-mode", "less");
+      btn.textContent = "Show less";
+    }
+  });
+}

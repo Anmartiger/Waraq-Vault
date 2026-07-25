@@ -10,7 +10,7 @@
 <p align="center">
   <img alt="License: AGPL v3" src="https://img.shields.io/badge/License-AGPL%20v3-BE9540">
   <img alt="Offline-first" src="https://img.shields.io/badge/Offline--first-0E3536">
-  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-1C6E74">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%20%E2%80%93%203.12-1C6E74">
   <img alt="SQLite FTS5" src="https://img.shields.io/badge/SQLite-FTS5-1C6E74">
 </p>
 
@@ -20,8 +20,8 @@
 
 WaraqVault turns a scattered pile of files &mdash; PDFs, Word documents, and scanned images spread
 across WhatsApp, email, and phone storage &mdash; into a **private, instantly searchable archive**
-that lives entirely on your own computer. You drag documents in; you search; you get the exact file
-back, with a snippet and a link to open the original. Nothing is ever uploaded.
+that lives entirely on your own computer. You drag documents in; you search; you get back every
+matching line, with its page and line number and the term highlighted. Nothing is ever uploaded.
 
 The hard part it gets right is **Arabic search**. Most tools stumble on Arabic because they
 mishandle right-to-left text, diacritics, and letter variants &mdash; so a search for one spelling
@@ -39,47 +39,167 @@ and query time**, so a match happens no matter how either was written.
 
 This is the part existing tools consistently get wrong &mdash; and the reason WaraqVault exists.
 
+## What it does today
+
+- **Drag-and-drop ingest** &mdash; drop a file (or click) and it is read, indexed and searchable.
+- **Live search** &mdash; results update as you type (300&nbsp;ms debounce, minimum 2 characters).
+- **Every match, not just one** &mdash; each document lists *all* of its matching lines, not a single snippet.
+- **Page &amp; line numbers** &mdash; every hit is labelled `p.12 / L340` so you can find it in the original.
+- **Highlighted terms** &mdash; matched words are marked inside each line, in Arabic and English alike.
+- **Show more, in batches** &mdash; the first 8 lines show immediately; each click reveals 50 more.
+- **Duplicate detection** &mdash; re-uploading a known file prompts you to *overwrite* or *cancel*, before any processing starts.
+- **RTL-aware UI** &mdash; each result line picks its own direction, so Arabic and English both read correctly.
+
+## Supported formats
+
+| Format | How the text is extracted | Page numbers |
+|---|---|---|
+| **PDF** | PyMuPDF text layer; pages with little or no text fall back to OCR | ✅ real pages |
+| **DOCX** | python-docx &mdash; paragraphs, tables and content controls, in document order | ✅ from Word's saved pagination |
+| **TXT** | decoded as UTF‑8, then cp1256 / ISO‑8859‑6 for Arabic files saved on Windows | line numbers only |
+| **Images** (PNG, JPG, BMP, TIFF, WEBP) | EasyOCR (Arabic + English) | line numbers only |
+
+> Legacy **`.doc`** is not supported &mdash; save it as `.docx` first. The app tells you so explicitly.
+
+## Quickstart
+
+> **Python 3.10 – 3.12.** Newer versions (3.13/3.14) do not yet have PyTorch wheels, which EasyOCR
+> needs, and the install will fail while trying to build from source.
+
+```bash
+python -m venv .venv
+```
+
+Install the dependencies (this pulls PyTorch, so it is a large download):
+
+```bash
+.venv/Scripts/python.exe -m pip install -r requirements.txt
+```
+
+Run the server:
+
+```bash
+.venv/Scripts/python.exe main.py
+```
+
+Then open **<http://127.0.0.1:8000>**.
+
+On Linux/macOS use `.venv/bin/python` instead of `.venv/Scripts/python.exe`.
+
+**The first run needs internet** &mdash; EasyOCR downloads its Arabic/English models (a few hundred
+MB) before the server reports `Uvicorn running`. After that, the app is fully offline.
+
 ## How it works
 
 ```
    documents  →  INGEST  →  EXTRACT  →  NORMALIZE  →  INDEX  →  SEARCH  →  result
-                 drag in    parse +     fold Arabic   SQLite    query in    open the
-                            OCR         variants      FTS5      AR / EN     original
+                 drag in    parse +     fold Arabic   SQLite    query in    page + line,
+                            OCR         variants      FTS5      AR / EN     highlighted
 ```
 
-## Tech stack
+1. **Ingest** &mdash; `POST /upload` hashes the file (SHA‑256) and checks for a duplicate *before* doing
+   any expensive work, so you are never left waiting on OCR just to be told the file already exists.
+2. **Extract** &mdash; the file is routed by extension first, then content type, to the matching engine.
+   Text is emitted one item per line, with `--- صفحة N ---` markers where page information exists.
+3. **Normalize** &mdash; Arabic is folded (diacritics stripped, alef/yaa/taa-marbuta variants unified)
+   and stored alongside the raw text.
+4. **Index** &mdash; the normalized text goes into a SQLite **FTS5** virtual table, kept in sync by triggers.
+5. **Search** &mdash; the query is normalized the same way, ranked with **BM25**, then every matching line
+   is located, tagged with its page and line number, and its matched words wrapped for highlighting.
 
-| Layer | Tool |
-|---|---|
-| Engine + glue | **Python** |
-| Full-text index (no server) | **SQLite + FTS5** |
-| PDF / DOCX text extraction | **PyMuPDF**, **python-docx** |
-| Arabic normalization | custom layer (index + query time) |
-| Local web UI  | **FastAPI** + HTML/CSS/JS |
-| OCR for scans  | **EasyOCR** |
+Everything runs on `127.0.0.1`. No network calls are made after the one-time model download.
 
-> The search core is **already built and working** &mdash; see [`engine/waraq.py`](engine/waraq.py).
+## API
 
+The UI is a thin client over four local endpoints.
 
-## What's in here
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/` | Serves the UI |
+| `GET` | `/status` | Health of the ingestion pipeline and the search index |
+| `GET` | `/search?q=…` | Search; needs ≥ 2 characters. Returns up to 20 documents |
+| `POST` | `/upload` | Multipart `file`, optional `overwrite=true`. Indexes the document |
+
+**`GET /search?q=ارشيف`**
+
+```jsonc
+{
+  "query": "ارشيف",
+  "count": 1,
+  "results": [
+    {
+      "filename": "annual_report.docx",
+      "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "snippet": "…تقرير <b>الأرشيف</b> السنوي…",
+      "rank": -1.83,
+      "match_count": 430,          // true total across the document
+      "matches": [                 // up to 1000 lines, each highlighted
+        { "line": 77, "page": 3, "text": "تقرير <b>الأرشيف</b> السنوي" }
+      ]
+    }
+  ]
+}
+```
+
+**`POST /upload`** returns `{ "filename", "status", "replaced", "extracted_text" }`.
+If the document is already indexed it returns **409 Conflict** instead, and the UI turns that into
+an overwrite / cancel prompt:
+
+```jsonc
+{ "detail": { "reason": "duplicate", "match": "content", "filename": "notes.txt", "indexed_at": "…" } }
+```
+
+`match` is `"content"` when the file's hash is already known (so a **renamed copy is still caught**),
+or `"filename"` when the name matches but the contents changed.
+
+## Project structure
 
 | Path | What it is |
 |---|---|
-| [`engine/waraq.py`](engine/waraq.py) | The search core: parse → normalize → FTS5 index → search |
-| [`schema.sql`](schema.sql) | The shared SQLite schema (documents store + FTS5 index) |
-| [`ui/index.html`](ui/index.html) | The themed web UI (served locally; RTL-aware, highlights matches) |
+| [`main.py`](main.py) | FastAPI app: routing, format detection, duplicate checks, the four endpoints |
+| [`engine/database.py`](engine/database.py) | Arabic normalization, FTS5 schema, search, per-line matching, duplicate lookup |
+| [`engine/pdf_engine.py`](engine/pdf_engine.py) | Hybrid PDF extraction &mdash; text layer, with OCR fallback per page |
+| [`engine/docx_engine.py`](engine/docx_engine.py) | DOCX extraction in document order, with page numbers from Word's markers |
+| [`engine/text_engine.py`](engine/text_engine.py) | Plain-text decoding with Arabic encoding fallbacks |
+| [`engine/ocr_engine.py`](engine/ocr_engine.py) | EasyOCR reader for images (Arabic + English) |
+| [`ui/index.html`](ui/index.html) | Page markup, rendered through Jinja2 |
+| [`ui/css/`](ui/css) | `base.css` (tokens, shell) and `components.css` (search, cards, uploader, dialog) |
+| [`ui/js/`](ui/js) | ES modules: `app` (entry), `search`, `upload`, `results`, `modal`, `dom`, `utils` |
 | [`docs/plan.md`](docs/plan.md) | The build plan &amp; team roles for the sprint |
-| [`docs/for-ghassan.md`](docs/for-ghassan.md) | The data + OCR hand-off contract |
+| `waraq.db` | The local SQLite index. Created on first run, and git-ignored &mdash; it is rebuildable |
+
+## Notes &amp; troubleshooting
+
+- **OCR is slow on CPU.** Scanned pages run roughly 5–30 seconds *each*; a scanned book can take
+  tens of minutes. Pages that already have a text layer are near-instant. A
+  `pin_memory ... no accelerator` warning from PyTorch during OCR is harmless and expected.
+- **The UI is cached hard.** After changing anything under `ui/`, hard-refresh with `Ctrl`+`F5`.
+- **ES modules need HTTP.** Open the app through the server, not by double-clicking `ui/index.html`.
+- **Re-indexing.** Text is extracted once at upload time, so changes to an extraction engine only
+  affect documents uploaded afterwards. Re-upload and choose *Overwrite* to refresh one.
+- **Starting over.** Stop the server and delete `waraq.db`; it is rebuilt empty on the next run.
+- **DOCX page numbers** come from the pagination Word recorded when it last saved the file. A
+  document written by another tool, with no page breaks of its own, shows line numbers only &mdash;
+  deliberately, rather than guessing a page and sending you to the wrong place.
+
+## Privacy
+
+Documents are read, indexed and searched entirely on your machine. Extracted text lives in the local
+`waraq.db`; the original files are never copied, moved, or transmitted. The only network access the
+project ever needs is the one-time OCR model download during setup.
 
 ## Status &amp; roadmap
 
 - [x] Arabic normalization (applied at index **and** query time)
-- [x] SQLite **FTS5** index + ranked search with snippets
-- [x] PDF / DOCX / TXT parsing
-- [x] Themed web UI design
+- [x] SQLite **FTS5** index + BM25-ranked search
+- [x] PDF / DOCX / TXT parsing, plus OCR for scanned images
 - [x] FastAPI server wiring the UI to the engine
-- [x] Drag-and-drop ingest
-- [x] OCR for scanned images
+- [x] Themed, RTL-aware web UI with drag-and-drop ingest
+- [x] All matching lines per document, with page &amp; line numbers and highlighting
+- [x] Duplicate detection with overwrite / cancel
+- [ ] Open or reveal the original file from a result
+- [ ] Manage the library (list and delete indexed documents)
+- [ ] GPU-accelerated OCR
 
 ## Team
 

@@ -91,10 +91,35 @@ MB) before the server reports `Uvicorn running`. After that, the app is fully of
 
 ## How it works
 
-```
-   documents  →  INGEST  →  EXTRACT  →  NORMALIZE  →  INDEX  →  SEARCH  →  result
-                 drag in    parse +     fold Arabic   SQLite    query in    page + line,
-                            OCR         variants      FTS5      AR / EN     highlighted
+```mermaid
+flowchart TD
+    A["Drop a file<br>PDF · DOCX · TXT · Image"] --> DUP{"Already<br>indexed?"}
+    DUP -- "new" --> ROUTE{"Route by<br>format"}
+    DUP -- "duplicate" --> ASK{"Overwrite<br>or cancel?"}
+    ASK -- "cancel" --> STOP["Keep the existing copy"]
+    ASK -- "overwrite" --> ROUTE
+
+    ROUTE -- "PDF" --> E1["PyMuPDF text layer<br>OCR fallback per page"]
+    ROUTE -- "DOCX" --> E2["python-docx<br>paragraphs · tables · page marks"]
+    ROUTE -- "TXT" --> E3["decode UTF-8 / cp1256"]
+    ROUTE -- "image" --> E4["EasyOCR<br>Arabic + English"]
+
+    E1 --> N["Normalize Arabic<br>strip diacritics · unify alef, yaa, taa"]
+    E2 --> N
+    E3 --> N
+    E4 --> N
+    N --> DB[("SQLite FTS5 index")]
+
+    Q["Type a query"] --> QN["Normalize the same way"]
+    QN --> DB
+    DB --> RANK["BM25 ranking"]
+    RANK --> LINES["Locate every matching line<br>page + line number + highlight"]
+    LINES --> OUT["Results"]
+
+    classDef store fill:#0E3536,stroke:#BE9540,stroke-width:2px,color:#FBF7EF
+    classDef fold fill:#BE9540,stroke:#8A6820,color:#ffffff
+    class DB store
+    class N,QN fold
 ```
 
 1. **Ingest** &mdash; `POST /upload` hashes the file (SHA‑256) and checks for a duplicate *before* doing
@@ -203,8 +228,10 @@ project ever needs is the one-time OCR model download during setup.
 
 ## Team
 
-- **Link-Top** — The Infrastructure & Data Pipeline: Built the core FastAPI backend, hybrid ingestion routing (PyMuPDF & EasyOCR), foundational SQLite FTS5 setup, and endpoint integration.
-- **AnmarTiger** — The Frontend & Search Logic: Developed the Web UI (drag-and-drop), the Arabic normalization algorithm, and advanced FTS5 search mechanics (BM25 ranking, snippet highlighting, and page/line extraction).
+Both of us worked across the stack; these are the areas each of us led.
+
+- **Link-Top** — Backend foundations: the initial FastAPI server, the hybrid ingestion routing for PDFs and images (PyMuPDF & EasyOCR), and the first SQLite FTS5 setup.
+- **AnmarTiger** — Search engine, ingestion and product surface: the Arabic normalization algorithm and the FTS5 search mechanics (BM25 ranking, per-line matching with page and line numbers, highlighting); DOCX and TXT ingestion; duplicate detection with overwrite/cancel; and the web UI end to end — drag-and-drop ingest, the results view, and the modular CSS/JS front end.
 
 ## License
 

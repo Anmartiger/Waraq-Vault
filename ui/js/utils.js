@@ -22,6 +22,7 @@ export function typeLabel(ct) {
   if (!ct) return "FILE";
   if (ct.indexOf("pdf") > -1) return "PDF";
   if (ct.indexOf("image/") === 0) return "IMG";
-  if (ct.indexOf("word") > -1) return "DOCX";
+  if (ct.indexOf("word") > -1) return "DOCX";   // …wordprocessingml.document
+  if (ct.indexOf("text/") === 0) return "TXT";
   return ct.split("/").pop().toUpperCase();
 }

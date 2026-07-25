@@ -4,6 +4,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 from engine.ocr_engine import reader, extract_text_from_image
 from engine.pdf_engine import process_hybrid_pdf
+from engine.docx_engine import process_docx
+from engine.text_engine import process_txt
 from engine.database import init_db, insert_document, search_documents
 from contextlib import asynccontextmanager
 import uvicorn
@@ -37,6 +39,35 @@ async def serve_ui(request: Request):
         }
     )
 
+_DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
+
+# نوع افتراضي يُخزَّن في قاعدة البيانات إذا لم يرسل المتصفح content_type
+_FALLBACK_TYPES = {
+    "pdf": "application/pdf",
+    "docx": _DOCX_TYPE,
+    "txt": "text/plain",
+    "image": "image/png",
+}
+
+def detect_kind(filename: str, content_type: str) -> str | None:
+    """
+    تحديد نوع الملف من الامتداد أولاً ثم من content_type،
+    لأن المتصفحات لا ترسل نوعاً موحداً لملفات DOCX والنصوص.
+    """
+    ext = os.path.splitext(filename or "")[1].lower()
+    ctype = (content_type or "").lower()
+
+    if ext == ".pdf" or ctype == "application/pdf":
+        return "pdf"
+    if ext == ".docx" or ctype == _DOCX_TYPE:
+        return "docx"
+    if ext == ".txt" or ctype.startswith("text/"):
+        return "txt"
+    if ext in _IMAGE_EXTS or ctype.startswith("image/"):
+        return "image"
+    return None
+
 @app.get("/status")
 async def system_status():
     """مسار لتتبع حالة النظام وتوجيه الفريق"""
@@ -55,34 +86,52 @@ async def search(q: str):
 
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
-    # 1. الرفض السريع (Fail Fast): الآن يدعم الصور والـ PDF
-    if not (file.content_type.startswith("image/") or file.content_type == "application/pdf"):
+    # 1. الرفض السريع (Fail Fast): يدعم الصور و PDF و DOCX والملفات النصية
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext == ".doc" or file.content_type == "application/msword":
         raise HTTPException(
-            status_code=400, 
-            detail="الملف المرفوع غير مدعوم. النظام يدعم الصور (PNG/JPG) وملفات PDF فقط حالياً."
+            status_code=400,
+            detail="صيغة .doc القديمة غير مدعومة. يرجى حفظ الملف بصيغة .docx ثم رفعه."
+        )
+
+    kind = detect_kind(file.filename, file.content_type)
+    if kind is None:
+        raise HTTPException(
+            status_code=400,
+            detail="الملف المرفوع غير مدعوم. النظام يدعم PDF و Word (DOCX) والملفات النصية (TXT) والصور (PNG/JPG)."
         )
 
     temp_file_path = f"temp_{uuid.uuid4()}_{file.filename}"
-    
+
     try:
         # 2. التوجيه الذكي بناءً على نوع الملف
-        if file.content_type == "application/pdf":
+        if kind == "pdf":
             # معالجة PDF في الذاكرة (لا نحتاج لحفظ الملف على القرص)
             file_bytes = await file.read()
             # إرسال العملية لخيط منفصل (Threadpool) لمنع تجميد الخادم
             extracted_text = await run_in_threadpool(process_hybrid_pdf, file_bytes, reader)
-            
+
+        elif kind == "docx":
+            # قراءة DOCX في الذاكرة (فك ضغط الملف قد يستغرق وقتاً لذا نستخدم خيطاً منفصلاً)
+            file_bytes = await file.read()
+            extracted_text = await run_in_threadpool(process_docx, file_bytes)
+
+        elif kind == "txt":
+            # الملفات النصية لا تحتاج معالجة ثقيلة، فقط فك الترميز
+            extracted_text = process_txt(await file.read())
+
         else:
             # معالجة الصور (بناءً على الهيكل الذي بنيناه سابقاً)
             # حفظ الصورة مؤقتاً
             with open(temp_file_path, "wb") as buffer:
                 buffer.write(await file.read())
-            
+
             # إرسال الصورة لمحرك OCR في خيط منفصل
             extracted_text = await run_in_threadpool(extract_text_from_image, temp_file_path)
 
         # بعد الانتهاء من run_in_threadpool واستخراج النص (extracted_text)
-        insert_document(file.filename, file.content_type, extracted_text)
+        stored_type = file.content_type or _FALLBACK_TYPES[kind]
+        insert_document(file.filename, stored_type, extracted_text)
         return {"filename": file.filename, "status": "تمت المعالجة والفهرسة بنجاح","extracted_text": extracted_text}
 
     except Exception as e:

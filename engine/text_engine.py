@@ -1,0 +1,26 @@
+import codecs
+
+def process_txt(file_bytes: bytes) -> str:
+    """
+    يستقبل ملفاً نصياً كبايتات ويعيد محتواه بعد فك الترميز.
+    الملفات العربية على ويندوز قد تكون بترميز cp1256 وليس UTF-8.
+    """
+    if not file_bytes:
+        return ""
+
+    # الملفات ذات علامة الترتيب (BOM) الخاصة بـ UTF-16 تُفك مباشرة
+    if file_bytes.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        try:
+            return file_bytes.decode("utf-16")
+        except UnicodeError:
+            pass
+
+    # utf-8-sig أولاً لأنه يزيل الـ BOM ويقرأ UTF-8 العادي أيضاً
+    for encoding in ("utf-8-sig", "cp1256", "iso-8859-6"):
+        try:
+            return file_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+
+    # الملاذ الأخير: لا نُسقط الملف بسبب بايتات تالفة
+    return file_bytes.decode("utf-8", errors="replace")

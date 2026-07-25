@@ -4,10 +4,28 @@ import { escapeHtml } from "./utils.js";
 import { drop, fileInput, input, setStatus } from "./dom.js";
 import { runSearch } from "./search.js";
 
+// Mirrors the server-side check in main.py: extension first, then content type,
+// because browsers report DOCX and text files inconsistently.
+function isSupported(file) {
+  var name = (file.name || "").toLowerCase();
+  var type = file.type || "";
+  if (/\.(pdf|docx|txt|png|jpe?g|bmp|tiff?|webp)$/.test(name)) return true;
+  return type.indexOf("image/") === 0 ||
+         type.indexOf("text/") === 0 ||
+         type === "application/pdf" ||
+         type.indexOf("wordprocessingml") > -1;
+}
+
 function upload(file) {
   if (!file) return;
-  var ok = (file.type.indexOf("image/") === 0) || file.type === "application/pdf";
-  if (!ok) { setStatus("Unsupported file — please use a PDF or an image."); return; }
+  if (/\.doc$/i.test(file.name || "")) {
+    setStatus("Old .doc format isn’t supported — please save it as .docx first.");
+    return;
+  }
+  if (!isSupported(file)) {
+    setStatus("Unsupported file — please use a PDF, Word (DOCX), text file, or an image.");
+    return;
+  }
 
   setStatus("Uploading &amp; processing <b>" + escapeHtml(file.name) + "</b> …");
   drop.classList.add("busy");

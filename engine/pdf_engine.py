@@ -1,5 +1,6 @@
 import fitz  # PyMuPDF
 import numpy as np
+import torch
 
 def process_hybrid_pdf(pdf_bytes: bytes, ocr_reader) -> str:
     """
@@ -12,6 +13,10 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_reader) -> str:
     try:
         # 1. القراءة في الذاكرة العشوائية: لا مساس بالقرص الصلب
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        # <--- الجراحة: الفشل السريع (Fail Fast) لحماية الخادم --->
+        if len(doc) > 5 and not torch.cuda.is_available():
+            raise ValueError("GPU_LIMIT_EXCEEDED")
         
         for page_num in range(len(doc)):
             page = doc[page_num]

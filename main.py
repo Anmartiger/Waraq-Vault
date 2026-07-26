@@ -148,7 +148,11 @@ async def upload_document(file: UploadFile = File(...), overwrite: bool = Form(F
                 buffer.write(file_bytes)
 
             # إرسال الصورة لمحرك OCR في خيط منفصل
-            extracted_text = await run_in_threadpool(extract_text_from_image, temp_file_path)
+            # <--- الجراحة: حماية محرك الصور من الامتدادات المزيفة --->
+            try:
+                extracted_text = await run_in_threadpool(extract_text_from_image, temp_file_path)
+            except Exception:
+                raise HTTPException(status_code=400, detail="الملف تالف أو لا يحتوي على بيانات صورة صالحة رغم امتداده.")
 
         # بعد الانتهاء من run_in_threadpool واستخراج النص (extracted_text)
         stored_type = file.content_type or _FALLBACK_TYPES[kind]
@@ -160,9 +164,20 @@ async def upload_document(file: UploadFile = File(...), overwrite: bool = Form(F
             "extracted_text": extracted_text,
         }
 
+    # <--- الجراحة الكبرى: منع تسريب الأخطاء للواجهة (Exception Leakage) --->
     except Exception as e:
-        # التقاط أي انهيار وإعادته كرسالة واضحة
-        raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء المعالجة: {str(e)}")
+        # 1. إذا كان الخطأ هو رسالة HTTP صريحة أطلقناها نحن، مررها كما هي
+        if isinstance(e, HTTPException):
+            raise e
+            
+        # 2. اصطياد خطأ الـ PDF الذي صنعناه في pdf_engine.py
+        error_msg = str(e)
+        if "GPU_LIMIT_EXCEEDED" in error_msg:
+            raise HTTPException(status_code=413, detail="لا يتوفر تسريع رسومي (GPU). الحد الأقصى لمعالجة PDF مصور هو 5 صفحات.")
+            
+        # 3. أي خطأ آخر غير متوقع (مثل انهيار الخادم)، اطبعه في الـ Terminal فقط لحماية أسرار النظام
+        print(f"CRITICAL BACKEND ERROR: {error_msg}")
+        raise HTTPException(status_code=500, detail="فشل الخادم في معالجة الملف. المحتوى تالف أو غير مقروء.")
 
     finally:
         # 3. التنظيف الصارم: حذف الملف المؤقت للصورة إذا تم إنشاؤه

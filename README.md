@@ -41,13 +41,30 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 
 ## What it does today
 
-- **Drag-and-drop ingest** &mdash; drop a file (or click) and it is read, indexed and searchable.
+- **Drag-and-drop ingest** &mdash; drop files (or click) and they are read, indexed and searchable.
+- **Multi-image upload** &mdash; up to 5 images in one go, with a live status per image.
+- **Background processing with real progress** &mdash; uploads return immediately; a progress bar
+  advances on actual per-page / per-image completion events, and a **Cancel** button stops
+  the job at the next safe point. The UI never freezes, whatever the file size.
+- **GPU auto-detection** &mdash; OCR runs on the GPU when one is present; otherwise it falls back
+  to a bounded CPU mode (cores&nbsp;&minus;&nbsp;1 threads) that keeps the app responsive. GPU failures
+  at runtime fall back to CPU automatically &mdash; never a crash.
 - **Live search** &mdash; results update as you type (300&nbsp;ms debounce, minimum 2 characters).
 - **Every match, not just one** &mdash; each document lists *all* of its matching lines, not a single snippet.
-- **Page &amp; line numbers** &mdash; every hit is labelled `p.12 / L340` so you can find it in the original.
-- **Highlighted terms** &mdash; matched words are marked inside each line, in Arabic and English alike.
-- **Show more, in batches** &mdash; the first 8 lines show immediately; each click reveals 50 more.
-- **Duplicate detection** &mdash; re-uploading a known file prompts you to *overwrite* or *cancel*, before any processing starts.
+- **Honest locations** &mdash; PDF/TXT hits are labelled `p.12 / L340`, Word hits show real
+  paragraphs (`¶12`), and image hits show clean OCR text with no invented line numbers.
+- **Arabic that actually matches** &mdash; searching `تخطيطا` also finds `وتخطيطا` / `بالتخطيط`
+  (attached conjunctions, prepositions and the definite article), while short words like
+  `في` and `مع` match only as whole words &mdash; no more highlights inside unrelated words.
+- **Language badges** &mdash; each result is tagged AR, EN or AR·EN from its real content.
+- **Search inside one file** &mdash; a scope filter restricts search to a chosen document; clearing
+  it restores full-archive search.
+- **Delete from the archive** &mdash; remove a document (with confirmation); its search-index
+  entries go with it, no orphaned rows.
+- **Duplicate detection** &mdash; re-uploading a known file prompts you to *overwrite* or *cancel*,
+  before any processing starts; renamed copies are caught by content hash.
+- **Force OCR** &mdash; a toggle for hybrid PDFs (text + embedded scans) that processes every page
+  as an image instead of trusting the text layer.
 - **RTL-aware UI** &mdash; each result line picks its own direction, so Arabic and English both read correctly.
 
 ## Supported formats
@@ -55,11 +72,13 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 | Format | How the text is extracted | Page numbers |
 |---|---|---|
 | **PDF** | PyMuPDF text layer; pages with little or no text fall back to OCR | ✅ real pages |
-| **DOCX** | python-docx &mdash; paragraphs, tables and content controls, in document order | ✅ from Word's saved pagination |
+| **DOCX** | python-docx &mdash; paragraphs, tables and content controls, in document order | ✅ pages from Word's saved pagination, positions as paragraphs (¶) |
 | **TXT** | decoded as UTF‑8, then cp1256 / ISO‑8859‑6 for Arabic files saved on Windows | line numbers only |
-| **Images** (PNG, JPG, BMP, TIFF, WEBP) | EasyOCR (Arabic + English) | line numbers only |
+| **Images** (PNG, JPG, BMP, TIFF, WEBP) | EasyOCR (Arabic + English) | OCR text blocks &mdash; no line numbers (images have none) |
 
 > Legacy **`.doc`** is not supported &mdash; save it as `.docx` first. The app tells you so explicitly.
+> Files with **no extension** are fine: the server identifies them from their actual content
+> (magic bytes for PDF/DOCX/images, text sniffing for plain text).
 
 ## Quickstart
 
@@ -141,9 +160,13 @@ The UI is a thin client over four local endpoints.
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/` | Serves the UI |
-| `GET` | `/status` | Health of the ingestion pipeline and the search index |
-| `GET` | `/search?q=…` | Search; needs ≥ 2 characters. Returns up to 20 documents |
-| `POST` | `/upload` | Multipart `file`, optional `overwrite=true`. Indexes the document |
+| `GET` | `/status` | Health + the active OCR device (GPU name, or CPU with thread count) |
+| `GET` | `/search?q=…&doc_id=…` | Search; needs ≥ 2 characters. Optional `doc_id` restricts the scope |
+| `GET` | `/documents` | List indexed documents (feeds the scope filter and deletion) |
+| `DELETE` | `/documents/{id}` | Delete one document; the FTS index entry goes with it |
+| `POST` | `/upload` | Multipart `file` ×1–5, optional `overwrite`, `force_ocr`. Returns **202 + job id** |
+| `GET` | `/jobs/{id}` | Job progress: percent, current page/image, per-file statuses, queue position |
+| `POST` | `/jobs/{id}/cancel` | Cancel a queued or running job at the next safe point |
 
 **`GET /search?q=ارشيف`**
 
@@ -166,9 +189,15 @@ The UI is a thin client over four local endpoints.
 }
 ```
 
-**`POST /upload`** returns `{ "filename", "status", "replaced", "extracted_text" }`.
-If the document is already indexed it returns **409 Conflict** instead, and the UI turns that into
-an overwrite / cancel prompt:
+**`POST /upload`** validates everything up front (size, format, duplicates) and then answers
+**202 Accepted** with `{ "job_id" }` — the heavy work happens in a background queue, one job at
+a time. The UI polls `GET /jobs/{id}`, whose progress counters advance on real per-page /
+per-image completion events, and shows the final report from `job.result`
+(`{ indexed, skipped, failed, replaced }`).
+
+If a single uploaded document is already indexed, `/upload` returns **409 Conflict** immediately
+(before any OCR), and the UI turns that into an overwrite / cancel prompt — inside an image
+batch, duplicates are skipped and reported per item instead:
 
 ```jsonc
 { "detail": { "reason": "duplicate", "match": "content", "filename": "notes.txt", "indexed_at": "…" } }
@@ -196,8 +225,13 @@ or `"filename"` when the name matches but the contents changed.
 ## Notes &amp; troubleshooting
 
 - **OCR is slow on CPU.** Scanned pages run roughly 5–30 seconds *each*; a scanned book can take
-  tens of minutes. Pages that already have a text layer are near-instant. A
-  `pin_memory ... no accelerator` warning from PyTorch during OCR is harmless and expected.
+  tens of minutes. Pages that already have a text layer are near-instant. The progress bar shows
+  the current page and you can cancel at any time; jobs queue up one at a time so the app stays
+  responsive throughout. A `pin_memory ... no accelerator` warning from PyTorch during OCR is
+  harmless and expected. With a CUDA GPU, OCR is picked up automatically and runs much faster.
+- **Dev-mode reloads kill in-flight jobs.** `main.py` runs uvicorn with `reload=True`; saving a
+  source file mid-job restarts the server and the job is lost (the UI reports it). Re-upload after
+  the restart.
 - **The UI is cached hard.** After changing anything under `ui/`, hard-refresh with `Ctrl`+`F5`.
 - **ES modules need HTTP.** Open the app through the server, not by double-clicking `ui/index.html`.
 - **Re-indexing.** Text is extracted once at upload time, so changes to an extraction engine only
@@ -222,9 +256,12 @@ project ever needs is the one-time OCR model download during setup.
 - [x] Themed, RTL-aware web UI with drag-and-drop ingest
 - [x] All matching lines per document, with page &amp; line numbers and highlighting
 - [x] Duplicate detection with overwrite / cancel
+- [x] Background job queue with real progress and cancellation
+- [x] GPU auto-detection with safe CPU fallback
+- [x] Multi-image upload (up to 5 per batch) with per-image status
+- [x] Manage the library: per-file search scope and deletion
+- [x] Arabic proclitic matching (`تخطيطا` ↔ `وتخطيطا`) and strict short-word search
 - [ ] Open or reveal the original file from a result
-- [ ] Manage the library (list and delete indexed documents)
-- [ ] GPU-accelerated OCR
 
 ## Team
 

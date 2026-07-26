@@ -134,12 +134,74 @@ def delete_documents(filename: str = None, file_hash: str = None) -> int:
 # أقصى عدد أسطر مطابقة تُرسَل لكل مستند (سقف أمان؛ زر "Show more" في الواجهة يعرضها كلها)
 _HIGHLIGHT_CAP = 1000
 
+# ------------------------------------------------------------------
+# السوابق العربية (حروف العطف والجر وأداة التعريف) — توليد تركيبي:
+# و/ف × ب/ك/ل × ال — مع معالجة خاصة لـ "ل + ال = لل".
+# تُستخدم في اتجاهين: توسيع استعلام FTS5 (وتخطيطا تُطابق تخطيطا)
+# وتقليم الكلمة عند المطابقة والتظليل — دون أي مساس بالنص المخزّن.
+# ------------------------------------------------------------------
+_CONJ = ("", "و", "ف")
+_PREP = ("", "ب", "ك", "ل")
+_ART  = ("", "ال")
+
+def _build_prefixes():
+    out = set()
+    for c in _CONJ:
+        for p in _PREP:
+            for a in _ART:
+                tail = "لل" if (p == "ل" and a == "ال") else p + a
+                pre = c + tail
+                if pre:
+                    out.add(pre)
+    return sorted(out, key=len, reverse=True)   # الأطول أولاً عند التقليم
+
+_PREFIXES = _build_prefixes()
+
+# علامات الترقيم التي تُقلَّم من أطراف الكلمة قبل المقارنة (عربية ولاتينية)
+_STRIP_CHARS = "\"'“”‘’«»()[]{}.,;:!?؟،؛…ـ-–—_*%٪/\\+|<>#@&=~`^"
+
+def _word_stems(norm_word: str) -> set:
+    """الكلمة كما هي + صورها بعد نزع سابقة واحدة (بشرط بقاء جذر من حرفين فأكثر)."""
+    w = norm_word.strip(_STRIP_CHARS)
+    if not w:
+        return set()
+    stems = {w}
+    for pre in _PREFIXES:
+        if w.startswith(pre) and len(w) - len(pre) >= 2:
+            stems.add(w[len(pre):])
+    return stems
+
+def _token_matches_word(norm_word: str, token: str) -> bool:
+    """
+    مطابقة صارمة على حدود الكلمات بدل البحث عن أي تطابق جزئي:
+    - كلمات البحث القصيرة (حرف/حرفان مثل "في" و"مع") تطابق الكلمة كاملة فقط،
+      فلا تُظلَّل "في" داخل "تحفيزه" ولا تُجلَب "معلومات" عند البحث عن "مع".
+    - الكلمات الأطول تطابق بادئة الكلمة (سلوك FTS5 نفسه مع المعامل *).
+    """
+    stems = _word_stems(norm_word)
+    if len(token) >= 3:
+        return any(s == token or s.startswith(token) for s in stems)
+    return token in stems
+
+def _line_has_match(norm_line: str, tokens: list) -> bool:
+    for word in norm_line.split():
+        stems = _word_stems(word)
+        if not stems:
+            continue
+        for token in tokens:
+            if len(token) >= 3:
+                if any(s == token or s.startswith(token) for s in stems):
+                    return True
+            elif token in stems:
+                return True
+    return False
+
 def _highlight_line(line: str, tokens: list) -> str:
     """إحاطة الكلمات المطابقة داخل السطر بوسم <b> اعتماداً على خوارزمية التطبيع نفسها."""
     def repl(match):
         word = match.group(0)
         norm_word = normalize(word)
-        if norm_word and any(tok in norm_word for tok in tokens):
+        if norm_word and any(_token_matches_word(norm_word, tok) for tok in tokens):
             return f"<b>{word}</b>"
         return word
     return re.sub(r"\S+", repl, line)
@@ -163,7 +225,7 @@ def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP):
         if not line.strip():
             continue
         norm_line = normalize(line)
-        if any(tok in norm_line for tok in tokens):
+        if _line_has_match(norm_line, tokens):
             total += 1
             if len(matches) < cap:
                 entry = {"line": i, "text": _highlight_line(line.strip(), tokens)}
@@ -172,42 +234,127 @@ def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP):
                 matches.append(entry)
     return matches, total
 
-def search_documents(query: str, limit: int = 20) -> list:
-    """البحث الذكي باستخدام FTS5 — يعيد لكل مستند جميع الأسطر المطابقة مع أرقامها"""
+def _fts_match_expr(tokens: list) -> str:
+    """
+    بناء استعلام FTS5 موسَّع بالسوابق: كل كلمة بحث تُطابق نفسها أو أي صورة
+    مسبوقة بحرف عطف/جر/تعريف (تخطيطا ← وتخطيطا، بالتخطيط...).
+    الكلمات القصيرة (أقل من 3 أحرف) تُطابَق كاملةً بلا معامل * حتى لا تجلب
+    "مع"* كلمة "معلومات" — وهذا مصدر النتائج الخاطئة سابقاً.
+    """
+    groups = []
+    for t in tokens:
+        variants = {t} | {pre + t for pre in _PREFIXES}
+        # علامة الاقتباس المزدوجة تُضاعَف داخل سلاسل FTS5 (حماية من كسر الاستعلام)
+        if len(t) >= 3:
+            alts = [f'"{v.replace(chr(34), chr(34) * 2)}"*' for v in sorted(variants)]
+        else:
+            alts = [f'"{v.replace(chr(34), chr(34) * 2)}"' for v in sorted(variants)]
+        groups.append("(" + " OR ".join(alts) + ")")
+    return " AND ".join(groups)
+
+# نطاقات الحروف لتحديد لغة المستند (وسام AR/EN/مختلط في الواجهة)
+_AR_CHARS = re.compile(r"[؀-ۿ]")
+_EN_CHARS = re.compile(r"[A-Za-z]")
+
+def _detect_lang(text: str) -> str:
+    """تحليل حقيقي لهوية النص بدل الافتراض الثابت: ar أو en أو mixed."""
+    sample = (text or "")[:200000]   # عيّنة كافية وسقف للأداء
+    ar = len(_AR_CHARS.findall(sample))
+    en = len(_EN_CHARS.findall(sample))
+    if ar and en:
+        ratio = ar / (ar + en)
+        if 0.1 <= ratio <= 0.9:
+            return "mixed"
+        return "ar" if ratio > 0.9 else "en"
+    if ar:
+        return "ar"
+    return "en"
+
+def _unit_for(content_type: str) -> str:
+    """
+    وحدة الترقيم الصادقة لكل نوع ملف:
+    - الصور: كتل OCR لا "أسطر" حقيقية ← تُخفى الأرقام في الواجهة (block)
+    - DOCX: فقرات وليست أسطراً بصرية ← تُعرض ¶ بدل L (para)
+    - PDF/TXT: أسطر فعلية ← تُعرض L (line)
+    """
+    ct = (content_type or "").lower()
+    if ct.startswith("image/"):
+        return "block"
+    if "wordprocessingml" in ct or ct == "application/msword":
+        return "para"
+    return "line"
+
+def search_documents(query: str, limit: int = 20, doc_ids: list = None) -> list:
+    """البحث الذكي باستخدام FTS5 — يعيد لكل مستند جميع الأسطر المطابقة مع أرقامها.
+    doc_ids: قصر البحث على مستندات بعينها (مرشِّح النطاق في الواجهة)."""
     norm_query = normalize(query)
-    # تحويل كلمات البحث إلى صيغة يفهمها FTS5 (كل كلمة يجب أن تحتوي على المعامل *)
-    tokens = [t for t in re.split(r"\s+", norm_query) if t]
+    # تقليم علامات الترقيم من أطراف كل كلمة بحث ("تخطيطا" تعمل مثل تخطيطا)
+    tokens = [t.strip(_STRIP_CHARS) for t in re.split(r"\s+", norm_query)]
+    tokens = [t for t in tokens if t]
     if not tokens:
         return []
 
-    match_query = " ".join(f'"{t}"*' for t in tokens)
+    match_query = _fts_match_expr(tokens)
+
+    sql = """
+        SELECT d.id, d.filename, d.content_type, d.raw_text,
+               snippet(documents_fts, 0, '<b>', '</b>', '...', 15) as snippet,
+               bm25(documents_fts) AS rank
+        FROM documents_fts
+        JOIN documents d ON d.id = documents_fts.rowid
+        WHERE documents_fts MATCH ?
+    """
+    params = [match_query]
+    if doc_ids:
+        placeholders = ",".join("?" for _ in doc_ids)
+        sql += f" AND d.id IN ({placeholders})"
+        params.extend(int(i) for i in doc_ids)
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit)
 
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row  # لإرجاع النتائج كقواميس (Dictionaries)
     try:
-        cursor = con.execute("""
-            SELECT d.filename, d.content_type, d.raw_text,
-                   snippet(documents_fts, 0, '<b>', '</b>', '...', 15) as snippet,
-                   bm25(documents_fts) AS rank
-            FROM documents_fts
-            JOIN documents d ON d.id = documents_fts.rowid
-            WHERE documents_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-        """, (match_query, limit))
-
+        cursor = con.execute(sql, params)
         results = []
         for row in cursor.fetchall():
             # raw_text يُستخدم داخلياً فقط لاستخراج الأسطر ولا يُعاد كاملاً في الرد
             matches, total = _find_line_matches(row["raw_text"], tokens)
             results.append({
+                "id": row["id"],
                 "filename": row["filename"],
                 "content_type": row["content_type"],
                 "snippet": row["snippet"],
                 "rank": row["rank"],
                 "matches": matches,
                 "match_count": total,
+                "lang": _detect_lang(row["raw_text"]),
+                "unit": _unit_for(row["content_type"]),
             })
         return results
+    finally:
+        con.close()
+
+def list_documents() -> list:
+    """قائمة المستندات المفهرسة — تغذّي مرشِّح النطاق وزر الحذف في الواجهة."""
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    try:
+        cursor = con.execute("""
+            SELECT id, filename, content_type, created_at, length(raw_text) AS chars
+            FROM documents
+            ORDER BY created_at DESC, id DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        con.close()
+
+def delete_document_by_id(doc_id: int) -> int:
+    """حذف مستند واحد بمعرّفه. زناد docs_ad يزيله من فهرس FTS5 — لا صفوف يتيمة."""
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cursor = con.execute("DELETE FROM documents WHERE id = ?", (int(doc_id),))
+        con.commit()
+        return cursor.rowcount
     finally:
         con.close()

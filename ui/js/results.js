@@ -65,6 +65,8 @@ function cardHtml(r) {
         '<span class="fname">' + escapeHtml(r.filename) + "</span>" +
         langBadge(r, sample) +
         '<span class="badge">' + escapeHtml(typeLabel(r.content_type)) + "</span>" +
+        (r.workspace && r.workspace !== "Default"
+          ? '<span class="wsbadge">' + escapeHtml(r.workspace) + "</span>" : "") +
         '<span class="hits">' + total + " match" + (total === 1 ? "" : "es") + "</span>" +
       "</div>" +
       body +

@@ -1,27 +1,28 @@
-// Upload: POST /upload (multipart, field "file", 1..5 files) — click or drag-and-drop.
-// The server replies 202 with a job id; we poll /jobs/{id} and render real
-// per-page / per-image progress, with a Cancel button for in-flight work.
+// Upload: POST /upload (multipart, field "file") — click or drag-and-drop.
+// Text formats travel in batches of up to 50 (fast extraction path); images are
+// capped at 5 and Force OCR re-tightens the rules, because those are the heavy
+// paths. Big scanned PDFs come back as 413/confirm_ocr and open a consent
+// dialog with a time estimate and an optional page selection.
 
 import { escapeHtml } from "./utils.js";
 import {
-  drop, fileInput, input, setStatus, forceOcr,
+  drop, fileInput, input, setStatus, forceOcr, workspaceInput, upOpts,
   progressWrap, progressBar, progressLabel, progressItems, progressCancel
 } from "./dom.js";
 import { runSearch } from "./search.js";
-import { confirmOverwrite } from "./modal.js";
-import { refreshLibrary } from "./library.js";
+import { confirmOverwrite, confirmBigScan } from "./modal.js";
+import { refreshLibrary } from "./files.js";
 
-var MAX_FILES = 5;
+var MAX_FILES = 50;
+var MAX_IMAGES = 5;
 var POLL_MS = 400;
 var activeJob = null;
 
-// Mirrors the server-side check in main.py: extension first, then content type,
-// because browsers report DOCX and text files inconsistently. Extensionless
-// files are allowed through — the server sniffs their real content.
+// Mirrors the server-side checks in main.py — instant feedback, server still validates.
 function isSupported(file) {
   var name = (file.name || "").toLowerCase();
   var type = file.type || "";
-  if (name.indexOf(".") === -1) return true;   // no extension: let the server sniff
+  if (name.indexOf(".") === -1) return true;   // no extension: the server sniffs content
   if (/\.(pdf|docx|txt|png|jpe?g|bmp|tiff?|webp)$/.test(name)) return true;
   return type.indexOf("image/") === 0 ||
          type.indexOf("text/") === 0 ||
@@ -68,7 +69,7 @@ function renderJob(job) {
   }
   progressLabel.textContent = label;
 
-  // Per-image status list, only for batches.
+  // Per-file status list, only for batches.
   if (job.items && job.items.length > 1) {
     progressItems.innerHTML = job.items.map(function (it) {
       return '<div class="pitem">' + (ICONS[it.status] || "•") +
@@ -133,17 +134,25 @@ function pollJob(jobId) {
     });
 }
 
-function upload(fileList, overwrite) {
+function upload(fileList, opts) {
+  opts = opts || {};
   var files = Array.prototype.slice.call(fileList || []);
   if (!files.length) return;
 
-  // Client-side mirrors of the server rules — instant feedback, server still validates.
-  if (files.length > MAX_FILES) {
-    setStatus("Too many files — up to " + MAX_FILES + " images per upload.");
+  var images = files.filter(isImage).length;
+  var forced = forceOcr && forceOcr.checked;
+
+  // Client-side mirrors of the server rules.
+  if (forced && files.length > 1 && !(images === files.length && images <= MAX_IMAGES)) {
+    setStatus("Force OCR is heavy on purpose — one file at a time, or up to " + MAX_IMAGES + " images.");
     return;
   }
-  if (files.length > 1 && !files.every(isImage)) {
-    setStatus("Multi-file upload is for images only (up to " + MAX_FILES + "). Upload PDF, DOCX or TXT one at a time.");
+  if (files.length > MAX_FILES) {
+    setStatus("Too many files — up to " + MAX_FILES + " per upload.");
+    return;
+  }
+  if (images > MAX_IMAGES) {
+    setStatus("Up to " + MAX_IMAGES + " images per upload (text formats can go up to " + MAX_FILES + ").");
     return;
   }
   for (var i = 0; i < files.length; i++) {
@@ -152,12 +161,12 @@ function upload(fileList, overwrite) {
       return;
     }
     if (!isSupported(files[i])) {
-      setStatus("Unsupported file — please use a PDF, Word (DOCX), text file, or an image.");
+      setStatus("Unsupported file — please use PDF, Word (DOCX), text files, or images.");
       return;
     }
   }
 
-  var what = files.length === 1 ? "<b>" + escapeHtml(files[0].name) + "</b>" : files.length + " images";
+  var what = files.length === 1 ? "<b>" + escapeHtml(files[0].name) + "</b>" : files.length + " files";
   setStatus("Uploading " + what + " …");
   drop.classList.add("busy");
   progressWrap.hidden = false;
@@ -168,17 +177,25 @@ function upload(fileList, overwrite) {
 
   var fd = new FormData();
   files.forEach(function (f) { fd.append("file", f); });
-  if (overwrite) fd.append("overwrite", "true");
-  if (forceOcr && forceOcr.checked) fd.append("force_ocr", "true");
+  if (opts.overwrite) fd.append("overwrite", "true");
+  if (forced) fd.append("force_ocr", "true");
+  if (opts.confirmed) fd.append("confirmed", "true");
+  if (opts.pages) fd.append("pages", opts.pages);
+  var ws = (workspaceInput.value || "").trim();
+  if (ws) fd.append("workspace", ws);
 
   fetch("/upload", { method: "POST", body: fd })
     .then(function (res) {
       return res.json().then(function (data) {
-        // 409 = already indexed; the server stopped before doing any OCR work.
-        if (res.status === 409) {
+        if (res.status === 409) {          // duplicate — stopped before any OCR
           var clash = new Error("duplicate");
           clash.duplicate = (data && data.detail) || {};
           throw clash;
+        }
+        if (res.status === 413) {          // big scan — needs explicit consent
+          var big = new Error("confirm");
+          big.confirm = (data && data.detail) || {};
+          throw big;
         }
         if (!res.ok) throw new Error(detailText(data, res.status));
         return data;
@@ -191,11 +208,15 @@ function upload(fileList, overwrite) {
       resetUploadUi();
       if (err.duplicate) {
         confirmOverwrite(err.duplicate).then(function (yes) {
-          if (yes) {
-            upload(files, true);
-          } else {
-            setStatus("Upload cancelled — the existing document was kept.");
-          }
+          if (yes) upload(files, { overwrite: true, confirmed: opts.confirmed, pages: opts.pages });
+          else setStatus("Upload cancelled — the existing document was kept.");
+        });
+        return;
+      }
+      if (err.confirm) {
+        confirmBigScan(err.confirm).then(function (res) {
+          if (res.ok) upload(files, { overwrite: opts.overwrite, confirmed: true, pages: res.pages || "" });
+          else setStatus("Upload cancelled — nothing was processed.");
         });
         return;
       }
@@ -203,10 +224,17 @@ function upload(fileList, overwrite) {
     });
 }
 
+export function openPicker() { fileInput.click(); }
+
 export function initUpload() {
-  drop.addEventListener("click", function () { fileInput.click(); });
+  drop.addEventListener("click", function (e) {
+    if (upOpts.contains(e.target)) return;   // typing a workspace ≠ opening the picker
+    fileInput.click();
+  });
   drop.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+    if ((e.key === "Enter" || e.key === " ") && !upOpts.contains(e.target)) {
+      e.preventDefault(); fileInput.click();
+    }
   });
   fileInput.addEventListener("change", function () { upload(fileInput.files); });
 

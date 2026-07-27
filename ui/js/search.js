@@ -1,8 +1,10 @@
-// Search: GET /search?q=…
+// Search: GET /search?q=… — scope (one file, or a workspace) comes from the
+// file manager sidebar.
 
 import { escapeHtml } from "./utils.js";
-import { form, input, setStatus, showEmpty, scopeSel } from "./dom.js";
+import { form, input, setStatus, showEmpty } from "./dom.js";
 import { renderResults } from "./results.js";
+import { getScope } from "./files.js";
 
 export function runSearch(q) {
   q = (q || "").trim();
@@ -12,9 +14,13 @@ export function runSearch(q) {
     return;
   }
   setStatus("Searching for <b>" + escapeHtml(q) + "</b> …");
-  // Scope filter: restrict the search to one document when a file is selected.
-  var scope = scopeSel && scopeSel.value ? "&doc_id=" + encodeURIComponent(scopeSel.value) : "";
-  fetch("/search?q=" + encodeURIComponent(q) + scope)
+
+  var url = "/search?q=" + encodeURIComponent(q);
+  var scope = getScope();
+  if (scope.doc_id != null) url += "&doc_id=" + encodeURIComponent(scope.doc_id);
+  else if (scope.workspace) url += "&workspace=" + encodeURIComponent(scope.workspace);
+
+  fetch(url)
     .then(function (res) { return res.json(); })
     .then(function (data) {
       var list = (data && data.results) || [];

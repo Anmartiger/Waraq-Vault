@@ -1,22 +1,26 @@
-// Themed confirm dialog — duplicate overwrites and file deletion share it.
+// Themed confirm dialog — overwrites, deletions, and the big-scan OCR confirmation.
 
 import { escapeHtml } from "./utils.js";
 
 var overlay   = document.getElementById("modal");
 var titleEl   = document.getElementById("modal-title");
 var textEl    = document.getElementById("modal-text");
+var inputRow  = document.getElementById("modal-input-row");
+var inputLbl  = document.getElementById("modal-input-label");
+var inputEl   = document.getElementById("modal-input");
 var okBtn     = document.getElementById("modal-ok");
 var cancelBtn = document.getElementById("modal-cancel");
 
 var resolver = null;   // resolve() of the promise currently awaiting an answer
+var withInput = false;
 
-function close(answer) {
+function close(accepted) {
   if (!resolver) return;
   var done = resolver;
   resolver = null;
   overlay.hidden = true;
   document.removeEventListener("keydown", onKey);
-  done(answer);
+  done(withInput ? { ok: accepted, value: inputEl.value.trim() } : accepted);
 }
 
 function onKey(e) {
@@ -28,12 +32,20 @@ cancelBtn.addEventListener("click", function () { close(false); });
 // Clicking the dim backdrop (but not the dialog itself) cancels.
 overlay.addEventListener("click", function (e) { if (e.target === overlay) close(false); });
 
-// Generic confirm. Resolves true when the destructive action is chosen.
+// Generic confirm. Resolves a boolean — or {ok, value} when an input is requested.
 export function confirmDialog(opts) {
   titleEl.textContent = opts.title || "Are you sure?";
   textEl.innerHTML = opts.html || "";
   okBtn.textContent = opts.okText || "Confirm";
   cancelBtn.textContent = opts.cancelText || "Cancel";
+
+  withInput = !!opts.inputLabel;
+  inputRow.hidden = !withInput;
+  if (withInput) {
+    inputLbl.textContent = opts.inputLabel;
+    inputEl.placeholder = opts.inputPlaceholder || "";
+    inputEl.value = "";
+  }
 
   overlay.hidden = false;
   document.addEventListener("keydown", onKey);
@@ -61,12 +73,45 @@ export function confirmOverwrite(info) {
   });
 }
 
-// Shown before removing a document from the index.
-export function confirmDelete(name) {
+// Shown before removing one document, several documents, or a whole workspace.
+export function confirmDelete(label, extraHtml) {
   return confirmDialog({
-    title: "Delete this document?",
-    html: "<b>" + escapeHtml(name) + "</b> will be removed from the archive and the search index." +
-          "<br>The original file on your disk is not touched.",
+    title: "Delete from the archive?",
+    html: "<b>" + escapeHtml(label) + "</b> will be removed from the archive and the search index." +
+          (extraHtml || "") +
+          "<br>The original files on your disk are not touched.",
     okText: "Delete"
+  });
+}
+
+// The CPU safety valve: a big scanned PDF needs explicit consent, with a rough
+// time estimate and (for a single PDF) an optional page selection.
+export function confirmBigScan(detail) {
+  detail = detail || {};
+  var mins = Math.max(1, Math.round((detail.estimate_seconds || 0) / 60));
+  var files = (detail.files || []).map(function (f) {
+    return "<li><b>" + escapeHtml(f.name) + "</b> — " + f.scanned_pages +
+           " of " + f.total_pages + " pages need OCR</li>";
+  }).join("");
+
+  var html =
+    "This upload needs OCR on <b>" + (detail.total_scanned_pages || "?") + " scanned pages</b>." +
+    "<ul>" + files + "</ul>" +
+    "Rough estimate: <b>~" + mins + " min</b> on " + escapeHtml(detail.device || "this machine") +
+    ". The app stays usable and you can cancel anytime.";
+
+  var opts = {
+    title: "Large scan — proceed?",
+    html: html,
+    okText: "Process it",
+    cancelText: "Cancel"
+  };
+  if (detail.page_selection_allowed) {
+    opts.inputLabel = "Only these pages (optional) — e.g. 1-10, 15, 22-30";
+    opts.inputPlaceholder = "all pages";
+  }
+  return confirmDialog(opts).then(function (res) {
+    if (typeof res === "boolean") return { ok: res, pages: "" };
+    return { ok: res.ok, pages: res.value };
   });
 }

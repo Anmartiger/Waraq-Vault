@@ -1,6 +1,9 @@
 import sqlite3
 import re
+import json
 from pathlib import Path
+
+from engine.textflow import page_for_line
 
 # تحديد مسار قاعدة البيانات لتكون في الجذر الرئيسي للمشروع
 DB_PATH = Path(__file__).resolve().parent.parent / "waraq.db"
@@ -32,6 +35,8 @@ def init_db():
             raw_text TEXT NOT NULL,
             normalized_text TEXT NOT NULL,
             file_hash TEXT,
+            workspace TEXT NOT NULL DEFAULT 'Default',
+            page_map TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         
@@ -57,24 +62,37 @@ def init_db():
         END;
     """)
 
-    # ترحيل قواعد البيانات القديمة التي أُنشئت قبل إضافة بصمة الملف
+    # ترحيل قواعد البيانات القديمة بدون مسح بيانات المستخدم (لا حاجة لحذف waraq.db)
     existing_columns = [row[1] for row in con.execute("PRAGMA table_info(documents)")]
     if "file_hash" not in existing_columns:
         con.execute("ALTER TABLE documents ADD COLUMN file_hash TEXT")
         con.commit()
         print("ℹ️ Added file_hash column to the existing documents table.")
+    if "workspace" not in existing_columns:
+        con.execute("ALTER TABLE documents ADD COLUMN workspace TEXT NOT NULL DEFAULT 'Default'")
+        con.commit()
+        print("ℹ️ Added workspace column to the existing documents table.")
+    if "page_map" not in existing_columns:
+        con.execute("ALTER TABLE documents ADD COLUMN page_map TEXT")
+        con.commit()
+        print("ℹ️ Added page_map column to the existing documents table.")
 
     con.close()
     print("✅ Database and FTS5 Schema initialized successfully.")
 
-def insert_document(filename: str, content_type: str, raw_text: str, file_hash: str = None):
-    """إدخال مستند جديد إلى قاعدة البيانات"""
+def insert_document(filename: str, content_type: str, raw_text: str, file_hash: str = None,
+                    workspace: str = "Default", page_map: list = None):
+    """إدخال مستند جديد إلى قاعدة البيانات.
+    page_map: خريطة الصفحات [[أول_سطر, رقم_الصفحة], ...] — تُخزَّن خارج النص
+    حتى لا تلوّث فهرس البحث بفواصل وهمية."""
     con = sqlite3.connect(DB_PATH)
     try:
         norm_text = normalize(raw_text)
         con.execute(
-            "INSERT INTO documents (filename, content_type, raw_text, normalized_text, file_hash) VALUES (?, ?, ?, ?, ?)",
-            (filename, content_type, raw_text, norm_text, file_hash)
+            "INSERT INTO documents (filename, content_type, raw_text, normalized_text, file_hash, workspace, page_map)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (filename, content_type, raw_text, norm_text, file_hash,
+             workspace or "Default", json.dumps(page_map) if page_map else None)
         )
         con.commit()
     finally:
@@ -206,22 +224,24 @@ def _highlight_line(line: str, tokens: list) -> str:
         return word
     return re.sub(r"\S+", repl, line)
 
-# علامة بداية الصفحة التي يضيفها محرك الـ PDF (مثال: "--- صفحة 12 ---")
+# علامة الصفحة القديمة (--- صفحة N ---): المحركات الجديدة لا تحقنها في النص إطلاقاً،
+# لكن الصفوف المفهرسة قبل هذا الإصدار ما زالت تحملها — نقرأها كإرث ولا نعرضها كنتائج.
 _PAGE_MARKER = re.compile(r"^\s*---\s*صفحة\s*(\d+)\s*---\s*$")
 
-def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP):
+def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP, page_map: list = None):
     """
     البحث عن كل الأسطر التي تحتوي على كلمات البحث.
-    يعيد (قائمة الأسطر المطابقة مع رقم السطر ورقم صفحته إن توفّرت، العدد الكلي للمطابقات).
+    أرقام الصفحات تأتي من خريطة الصفحات المخزّنة خارج النص (page_map)؛
+    وللصفوف القديمة فقط نلتقطها من العلامات المتبقية داخل النص.
     """
     matches = []
     total = 0
-    page = None  # يبقى None للصور (لا تحتوي علامات صفحات)
+    legacy_page = None
     for i, line in enumerate((raw_text or "").split("\n"), start=1):
         marker = _PAGE_MARKER.match(line)
         if marker:
-            page = int(marker.group(1))
-            continue  # لا نعتبر سطر العلامة نفسه نتيجة بحث
+            legacy_page = int(marker.group(1))
+            continue  # سطر العلامة القديم ليس نتيجة بحث
         if not line.strip():
             continue
         norm_line = normalize(line)
@@ -229,6 +249,7 @@ def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP):
             total += 1
             if len(matches) < cap:
                 entry = {"line": i, "text": _highlight_line(line.strip(), tokens)}
+                page = page_for_line(page_map, i) if page_map else legacy_page
                 if page is not None:
                     entry["page"] = page
                 matches.append(entry)
@@ -284,9 +305,9 @@ def _unit_for(content_type: str) -> str:
         return "para"
     return "line"
 
-def search_documents(query: str, limit: int = 20, doc_ids: list = None) -> list:
+def search_documents(query: str, limit: int = 20, doc_ids: list = None, workspace: str = None) -> list:
     """البحث الذكي باستخدام FTS5 — يعيد لكل مستند جميع الأسطر المطابقة مع أرقامها.
-    doc_ids: قصر البحث على مستندات بعينها (مرشِّح النطاق في الواجهة)."""
+    doc_ids: قصر البحث على مستندات بعينها. workspace: قصره على مجموعة كاملة."""
     norm_query = normalize(query)
     # تقليم علامات الترقيم من أطراف كل كلمة بحث ("تخطيطا" تعمل مثل تخطيطا)
     tokens = [t.strip(_STRIP_CHARS) for t in re.split(r"\s+", norm_query)]
@@ -297,7 +318,7 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None) -> list:
     match_query = _fts_match_expr(tokens)
 
     sql = """
-        SELECT d.id, d.filename, d.content_type, d.raw_text,
+        SELECT d.id, d.filename, d.content_type, d.raw_text, d.workspace, d.page_map,
                snippet(documents_fts, 0, '<b>', '</b>', '...', 15) as snippet,
                bm25(documents_fts) AS rank
         FROM documents_fts
@@ -309,6 +330,9 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None) -> list:
         placeholders = ",".join("?" for _ in doc_ids)
         sql += f" AND d.id IN ({placeholders})"
         params.extend(int(i) for i in doc_ids)
+    if workspace:
+        sql += " AND d.workspace = ?"
+        params.append(workspace)
     sql += " ORDER BY rank LIMIT ?"
     params.append(limit)
 
@@ -318,12 +342,14 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None) -> list:
         cursor = con.execute(sql, params)
         results = []
         for row in cursor.fetchall():
+            page_map = json.loads(row["page_map"]) if row["page_map"] else None
             # raw_text يُستخدم داخلياً فقط لاستخراج الأسطر ولا يُعاد كاملاً في الرد
-            matches, total = _find_line_matches(row["raw_text"], tokens)
+            matches, total = _find_line_matches(row["raw_text"], tokens, page_map=page_map)
             results.append({
                 "id": row["id"],
                 "filename": row["filename"],
                 "content_type": row["content_type"],
+                "workspace": row["workspace"],
                 "snippet": row["snippet"],
                 "rank": row["rank"],
                 "matches": matches,
@@ -335,16 +361,21 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None) -> list:
     finally:
         con.close()
 
-def list_documents() -> list:
-    """قائمة المستندات المفهرسة — تغذّي مرشِّح النطاق وزر الحذف في الواجهة."""
+def list_documents(workspace: str = None) -> list:
+    """قائمة المستندات المفهرسة — تغذّي مدير الملفات ومرشِّح النطاق في الواجهة."""
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     try:
-        cursor = con.execute("""
-            SELECT id, filename, content_type, created_at, length(raw_text) AS chars
+        sql = """
+            SELECT id, filename, content_type, workspace, created_at, length(raw_text) AS chars
             FROM documents
-            ORDER BY created_at DESC, id DESC
-        """)
+        """
+        params = []
+        if workspace:
+            sql += " WHERE workspace = ?"
+            params.append(workspace)
+        sql += " ORDER BY created_at DESC, id DESC"
+        cursor = con.execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
     finally:
         con.close()
@@ -354,6 +385,45 @@ def delete_document_by_id(doc_id: int) -> int:
     con = sqlite3.connect(DB_PATH)
     try:
         cursor = con.execute("DELETE FROM documents WHERE id = ?", (int(doc_id),))
+        con.commit()
+        return cursor.rowcount
+    finally:
+        con.close()
+
+def delete_documents_by_ids(doc_ids: list) -> int:
+    """الحذف الجماعي للملفات المحددة في مدير الملفات — عملية واحدة (Transaction)."""
+    ids = [int(i) for i in (doc_ids or [])]
+    if not ids:
+        return 0
+    con = sqlite3.connect(DB_PATH)
+    try:
+        placeholders = ",".join("?" for _ in ids)
+        cursor = con.execute(f"DELETE FROM documents WHERE id IN ({placeholders})", ids)
+        con.commit()
+        return cursor.rowcount
+    finally:
+        con.close()
+
+def list_workspaces() -> list:
+    """مساحات العمل (المجموعات) مع عدد مستندات كل واحدة — هيكلة مسطحة بلا مجلدات متداخلة."""
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    try:
+        cursor = con.execute("""
+            SELECT workspace AS name, COUNT(*) AS count, SUM(length(raw_text)) AS chars
+            FROM documents
+            GROUP BY workspace
+            ORDER BY name COLLATE NOCASE
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        con.close()
+
+def delete_workspace(name: str) -> int:
+    """حذف مجموعة كاملة بضربة واحدة. الزناد يتكفل بتنظيف فهرس FTS5."""
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cursor = con.execute("DELETE FROM documents WHERE workspace = ?", (name,))
         con.commit()
         return cursor.rowcount
     finally:

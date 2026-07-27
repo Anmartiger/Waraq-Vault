@@ -1,22 +1,25 @@
-from fastapi import FastAPI, Request, UploadFile, File, Form, Query, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, Form, Query, Body, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
 from engine import ocr_engine
 from engine import jobs
 from engine.jobs import JobCancelled
-from engine.pdf_engine import process_hybrid_pdf
+from engine.pdf_engine import process_hybrid_pdf, pdf_precheck, parse_page_selection
 from engine.docx_engine import process_docx
 from engine.text_engine import process_txt
+from engine.textflow import smart_join
 from engine.database import (
     init_db, insert_document, search_documents, find_duplicate,
     delete_documents, list_documents, delete_document_by_id,
+    delete_documents_by_ids, list_workspaces, delete_workspace,
 )
 from contextlib import asynccontextmanager
 from typing import Annotated
 import uvicorn
 import io
 import os
+import re
 import zipfile
 import hashlib
 
@@ -49,7 +52,14 @@ async def serve_ui(request: Request):
 
 _DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
-_MAX_BATCH = 5   # الحد الأقصى للملفات في عملية رفع واحدة
+
+# سياسة الدفعات: الاستخراج النصي سريع فلا داعي لخنق المستخدم بملف واحد،
+# أما الصور (OCR ثقيل) فتبقى محدودة، و Force OCR يعيد التقييد الصارم.
+_MAX_BATCH = 50            # الحد الأقصى للملفات النصية/PDF في الرفعة الواحدة
+_MAX_IMAGES_PER_BATCH = 5  # الحد الأقصى للصور في الرفعة الواحدة
+_CONFIRM_SCANNED_PAGES = 10   # فوق هذا العدد من الصفحات المصورة نطلب تأكيد المستخدم
+_EST_SEC_PER_PAGE_GPU = 1.5   # تقدير تقريبي لزمن OCR للصفحة الواحدة
+_EST_SEC_PER_PAGE_CPU = 15.0
 
 # نوع افتراضي يُخزَّن في قاعدة البيانات إذا لم يرسل المتصفح content_type
 _FALLBACK_TYPES = {
@@ -59,32 +69,41 @@ _FALLBACK_TYPES = {
     "image": "image/png",
 }
 
-def _sniff_kind(head: bytes) -> str | None:
-    """
-    التعرف على نوع الملف من محتواه الفعلي (Magic Bytes) عندما يفشل الاسم والترويسة.
-    هذا يحل مشكلة الملفات النصية بلا امتداد (مثل "هندسة_AI") التي يرسلها المتصفح
-    بنوع application/octet-stream.
-    """
-    if not head:
+def _zip_flavor(data: bytes) -> str | None:
+    """تمييز نكهة ملف ZIP: docx أو odt أو zip عادي — لرسائل خطأ صادقة."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = z.namelist()
+            if any(n.startswith("word/") for n in names):
+                return "docx"
+            if "mimetype" in names:
+                mimetype = z.read("mimetype")[:100].decode("ascii", "replace")
+                if "opendocument.text" in mimetype:
+                    return "odt"
+            return "zip"
+    except Exception:
         return None
-    if head.startswith(b"%PDF-"):
+
+def _sniff_kind(data: bytes) -> str | None:
+    """
+    التعرف على نوع الملف من محتواه الفعلي (Magic Bytes) — لا ثقة بالاسم وحده.
+    """
+    if not data:
+        return None
+    if data.startswith(b"%PDF-"):
         return "pdf"
-    if head.startswith(b"\x89PNG\r\n\x1a\n") or head.startswith(b"\xff\xd8\xff") \
-       or head.startswith(b"BM") or head[:4] in (b"II*\x00", b"MM\x00*"):
+    if data.startswith(b"\x89PNG\r\n\x1a\n") or data.startswith(b"\xff\xd8\xff") \
+       or data[:4] in (b"II*\x00", b"MM\x00*"):
         return "image"
-    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+    # BMP: توقيع "BM" وحده ضعيف (نص يبدأ بـ BMW مثلاً) — نتحقق من الحقول المحجوزة
+    if data.startswith(b"BM") and len(data) > 26 and data[6:10] == b"\x00\x00\x00\x00":
         return "image"
-    if head[:4] == b"PK\x03\x04":
-        # أرشيف ZIP — نتأكد أنه DOCX فعلاً وليس أي ملف مضغوط آخر
-        try:
-            with zipfile.ZipFile(io.BytesIO(head)) as z:
-                if any(n.startswith("word/") for n in z.namelist()):
-                    return "docx"
-        except Exception:
-            pass
-        return None
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image"
+    if data[:4] == b"PK\x03\x04":
+        return "docx" if _zip_flavor(data) == "docx" else None
     # نص محتمل: لا بايتات صفرية + قابل لفك الترميز بأحد ترميزات المشروع
-    sample = head[:4096]
+    sample = data[:4096]
     if b"\x00" in sample:
         return None
     for encoding in ("utf-8", "cp1256"):
@@ -97,9 +116,7 @@ def _sniff_kind(head: bytes) -> str | None:
 
 def detect_kind(filename: str, content_type: str, file_bytes: bytes = b"") -> str | None:
     """
-    تحديد نوع الملف على ثلاث مراحل: الامتداد ← ترويسة content_type ← بصمة المحتوى.
-    المتصفحات لا ترسل نوعاً موحداً لملفات DOCX والنصوص، والملفات بلا امتداد
-    تصل كـ octet-stream — لذلك لا نعتمد على مصدر واحد أبداً.
+    تحديد نوع الملف: الامتداد ← ترويسة content_type ← بصمة المحتوى.
     """
     ext = os.path.splitext(filename or "")[1].lower()
     ctype = (content_type or "").lower()
@@ -114,6 +131,32 @@ def detect_kind(filename: str, content_type: str, file_bytes: bytes = b"") -> st
         return "image"
     return _sniff_kind(file_bytes)
 
+def _verify_content_matches(kind: str, data: bytes, filename: str) -> None:
+    """
+    صمام أمان الامتدادات المزيفة: الامتداد ادّعى نوعاً، والمحتوى يجب أن يثبته.
+    ملف ODT مسمّى .pdf يُرفض هنا برسالة واضحة بدل تلويث قاعدة البيانات بسجل تالف.
+    """
+    sniffed = _sniff_kind(data)
+    if sniffed == kind:
+        return
+    flavor = _zip_flavor(data) if data[:4] == b"PK\x03\x04" else None
+    actual = {"odt": "ملف OpenDocument (ODT)", "zip": "أرشيف ZIP", "docx": "ملف Word"}.get(
+        flavor, {"pdf": "ملف PDF", "image": "صورة", "txt": "ملف نصي", None: "محتوى غير معروف"}.get(sniffed, "محتوى غير معروف")
+    )
+    raise HTTPException(
+        status_code=400,
+        detail=f"الامتداد لا يطابق المحتوى الحقيقي للملف {filename}: المحتوى الفعلي {actual}. "
+               f"أعد تسمية الملف بامتداده الصحيح أو حوّله للصيغة المدعومة."
+    )
+
+_WS_CLEAN = re.compile(r"[\\/\r\n\t]+")
+
+def _sanitize_workspace(name: str) -> str:
+    """تنظيف اسم مساحة العمل: بلا فواصل مسارات، بطول معقول، والافتراضي Default."""
+    name = _WS_CLEAN.sub("-", (name or "").strip())
+    name = re.sub(r"\s{2,}", " ", name)
+    return name[:40] or "Default"
+
 @app.get("/status")
 async def system_status():
     """مسار لتتبع حالة النظام وتوجيه الفريق"""
@@ -125,17 +168,33 @@ async def system_status():
     }
 
 @app.get("/search")
-async def search(q: str, doc_id: Annotated[list[int] | None, Query()] = None):
+async def search(q: str, doc_id: Annotated[list[int] | None, Query()] = None,
+                 workspace: str | None = None):
     if not q or len(q) < 2:
         return {"results": []}
-    results = search_documents(q, doc_ids=doc_id)
-    return {"query": q, "count": len(results), "results": results, "scope": doc_id or []}
+    results = search_documents(q, doc_ids=doc_id, workspace=workspace)
+    return {"query": q, "count": len(results), "results": results,
+            "scope": doc_id or [], "workspace": workspace}
 
 @app.get("/documents")
-async def documents():
-    """قائمة المستندات المفهرسة — تغذي مرشِّح النطاق وخيار الحذف في الواجهة."""
-    docs = list_documents()
+async def documents(workspace: str | None = None):
+    """قائمة المستندات المفهرسة — تغذي مدير الملفات في الواجهة."""
+    docs = list_documents(workspace=workspace)
     return {"count": len(docs), "documents": docs}
+
+@app.get("/workspaces")
+async def workspaces():
+    """مساحات العمل (المجموعات) وعدد مستندات كل واحدة."""
+    spaces = list_workspaces()
+    return {"count": len(spaces), "workspaces": spaces}
+
+@app.delete("/workspaces/{name}")
+async def remove_workspace(name: str):
+    """حذف مجموعة كاملة بضربة واحدة — بديل المجلدات المتداخلة بلا تعقيد شجري."""
+    deleted = delete_workspace(name)
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="لا توجد مجموعة بهذا الاسم.")
+    return {"deleted": deleted, "workspace": name}
 
 @app.delete("/documents/{doc_id}")
 async def delete_document(doc_id: int):
@@ -144,6 +203,12 @@ async def delete_document(doc_id: int):
     if deleted == 0:
         raise HTTPException(status_code=404, detail="المستند غير موجود — ربما حُذف مسبقاً.")
     return {"deleted": deleted, "id": doc_id}
+
+@app.post("/documents/delete")
+async def delete_documents_bulk(ids: Annotated[list[int], Body(embed=True)]):
+    """الحذف الجماعي للملفات المحددة في مدير الملفات."""
+    deleted = delete_documents_by_ids(ids)
+    return {"deleted": deleted}
 
 @app.get("/jobs/{job_id}")
 async def job_status(job_id: str):
@@ -163,8 +228,7 @@ async def job_cancel(job_id: str):
 def _process_upload_job(job_id: str, prepared: list, paged: bool):
     """
     جسم المهمة الخلفية: يعالج كل ملفات الدفعة بالتسلسل ويحدّث التقدم بعد كل
-    صفحة/صورة مكتملة فعلياً. يعمل داخل منفّذ المهام (خيط واحد) فلا يجمّد الخادم
-    ولا الواجهة مهما كان حجم الملف — وهذا بديل سقف الصفحات السابق.
+    صفحة/صورة مكتملة فعلياً. يعمل داخل منفّذ المهام (خيط واحد) فلا يجمّد الخادم.
     """
     indexed, skipped, failed = [], [], []
     replaced = 0
@@ -191,24 +255,39 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
                 replaced += delete_documents(filename=name, file_hash=item["hash"])
 
             kind = item["kind"]
+            page_map = None
+
             if kind == "pdf":
                 def _page_progress(done, total, label):
-                    jobs.add_progress(job_id, done=done, total=total, current=f"{name} — {label}")
-                extracted_text = process_hybrid_pdf(
+                    if paged:
+                        jobs.add_progress(job_id, done=done, total=total, current=f"{name} — {label}")
+                    else:
+                        jobs.add_progress(job_id, current=f"{name} — {label}")
+                extracted_text, page_map = process_hybrid_pdf(
                     item["bytes"], ocr_engine.run_ocr,
                     force_ocr=item["force_ocr"],
+                    pages=item.get("pages"),
                     progress=_page_progress,
                     is_cancelled=lambda: jobs.is_cancelled(job_id),
                 )
             elif kind == "docx":
-                extracted_text = process_docx(item["bytes"])
+                def _media_progress(done, total, label):
+                    jobs.add_progress(job_id, current=f"{name} — {label}")
+                extracted_text, page_map = process_docx(
+                    item["bytes"],
+                    force_ocr=item["force_ocr"],
+                    ocr_fn=ocr_engine.run_ocr if item["force_ocr"] else None,
+                    progress=_media_progress,
+                    is_cancelled=lambda: jobs.is_cancelled(job_id),
+                )
             elif kind == "txt":
                 extracted_text = process_txt(item["bytes"])
             else:
-                # الصور تُمرَّر كبايتات مباشرة — لا ملفات مؤقتة على القرص إطلاقاً
-                extracted_text = " \n ".join(ocr_engine.run_ocr(item["bytes"]))
+                # الصور تُمرَّر كبايتات مباشرة، والدمج الذكي يبني فقرات مترابطة
+                extracted_text = smart_join(ocr_engine.run_ocr(item["bytes"]))
 
-            insert_document(name, item["stored_type"], extracted_text, item["hash"])
+            insert_document(name, item["stored_type"], extracted_text, item["hash"],
+                            workspace=item["workspace"], page_map=page_map)
             jobs.set_item(job_id, idx, "indexed")
             indexed.append(name)
 
@@ -233,19 +312,25 @@ async def upload_document(
     file: list[UploadFile] = File(...),
     overwrite: bool = Form(False),
     force_ocr: bool = Form(False),
+    workspace: str = Form("Default"),
+    pages: str | None = Form(None),
+    confirmed: bool = Form(False),
 ):
     """
-    يستقبل ملفاً واحداً (أي صيغة مدعومة) أو دفعة صور حتى 5 صور، ويعيد فوراً
-    معرّف مهمة (202). المعالجة الثقيلة تجري في طابور خلفي، والواجهة تتابع
-    التقدم عبر GET /jobs/{id} وتستطيع الإلغاء عبر POST /jobs/{id}/cancel.
+    يستقبل حتى 50 ملفاً نصياً (PDF/DOCX/TXT) أو حتى 5 صور في الدفعة، ويعيد فوراً
+    معرّف مهمة (202). حماية المعالج تجري هنا في الخلفية: الملفات المصوَّرة الكبيرة
+    تتطلب تأكيداً صريحاً من المستخدم (مع تقدير زمني وخيار تحديد صفحات بعينها)
+    بدل حظر المستخدم أو خنق الخادم.
     """
     if not file:
         raise HTTPException(status_code=400, detail="لم يُرفَع أي ملف.")
     if len(file) > _MAX_BATCH:
         raise HTTPException(
             status_code=400,
-            detail=f"الحد الأقصى {_MAX_BATCH} ملفات في الرفعة الواحدة (أُرسل {len(file)})."
+            detail=f"الحد الأقصى {_MAX_BATCH} ملفاً في الرفعة الواحدة (أُرسل {len(file)})."
         )
+
+    workspace = _sanitize_workspace(workspace)
 
     # 1. الفحص والقراءة والرفض السريع (Fail Fast) قبل أي معالجة ثقيلة
     prepared = []
@@ -268,6 +353,9 @@ async def upload_document(
                 detail=f"الملف غير مدعوم: {f.filename}. النظام يدعم PDF و Word (DOCX) والملفات النصية والصور."
             )
 
+        # صمام الامتدادات المزيفة: المحتوى الفعلي يجب أن يطابق النوع المدّعى
+        _verify_content_matches(kind, data, f.filename)
+
         prepared.append({
             "name": f.filename,
             "bytes": data,
@@ -275,18 +363,72 @@ async def upload_document(
             "kind": kind,
             "stored_type": f.content_type or _FALLBACK_TYPES[kind],
             "force_ocr": force_ocr,
+            "workspace": workspace,
             "skip": False,
             "overwrite_dup": False,
+            "pages": None,
         })
 
-    # 2. قاعدة الدفعات: الرفع المتعدد مخصص للصور فقط (حتى 5 صور في المرة)
-    if len(prepared) > 1 and any(p["kind"] != "image" for p in prepared):
+    # 2. قواعد الدفعات — Force OCR يعيد التقييد الصارم لأنه معالجة ثقيلة بطلب صريح
+    image_count = sum(1 for p in prepared if p["kind"] == "image")
+    if force_ocr:
+        if len(prepared) > 1 and not (image_count == len(prepared) and image_count <= _MAX_IMAGES_PER_BATCH):
+            raise HTTPException(
+                status_code=400,
+                detail=f"مع تفعيل Force OCR: ملف واحد فقط، أو حتى {_MAX_IMAGES_PER_BATCH} صور."
+            )
+    elif image_count > _MAX_IMAGES_PER_BATCH:
         raise HTTPException(
             status_code=400,
-            detail="الرفع المتعدد مخصص للصور فقط (حتى 5 صور). ملفات PDF و DOCX والنصوص تُرفَع واحداً واحداً."
+            detail=f"الحد الأقصى {_MAX_IMAGES_PER_BATCH} صور في الدفعة الواحدة (أُرسل {image_count})."
         )
 
-    # 3. فحص التكرار يسبق المعالجة حتى لا ينتظر المستخدم OCR بلا فائدة
+    # 3. الفحص المسبق لملفات PDF (سريع، بلا OCR): كم صفحة مصورة سنعالج فعلياً؟
+    pdf_items = [p for p in prepared if p["kind"] == "pdf"]
+    for p in pdf_items:
+        try:
+            p["precheck"] = pdf_precheck(p["bytes"])
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"ملف PDF تالف أو غير قابل للقراءة: {p['name']}")
+
+    # اختيار صفحات بعينها متاح لرفعة PDF واحدة فقط
+    if pages:
+        if len(prepared) != 1 or prepared[0]["kind"] != "pdf":
+            raise HTTPException(status_code=400, detail="تحديد الصفحات متاح عند رفع ملف PDF واحد فقط.")
+        try:
+            prepared[0]["pages"] = parse_page_selection(pages, prepared[0]["precheck"]["total_pages"])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    # 4. صمام أمان المعالج: فوق حد الصفحات المصورة نطلب موافقة صريحة مع تقدير زمني
+    total_scanned = 0
+    confirm_files = []
+    for p in pdf_items:
+        selected = set(p["pages"]) if p["pages"] else set(range(1, p["precheck"]["total_pages"] + 1))
+        if force_ocr:
+            scanned_count = len(selected)
+        else:
+            scanned_count = len(selected & set(p["precheck"]["scanned_pages"]))
+        p["scanned_count"] = scanned_count
+        total_scanned += scanned_count
+        confirm_files.append({
+            "name": p["name"],
+            "total_pages": p["precheck"]["total_pages"],
+            "scanned_pages": scanned_count,
+        })
+
+    if total_scanned > _CONFIRM_SCANNED_PAGES and not confirmed:
+        per_page = _EST_SEC_PER_PAGE_GPU if ocr_engine.GPU_AVAILABLE else _EST_SEC_PER_PAGE_CPU
+        raise HTTPException(status_code=413, detail={
+            "reason": "confirm_ocr",
+            "total_scanned_pages": total_scanned,
+            "estimate_seconds": round(total_scanned * per_page),
+            "device": ocr_engine.OCR_DEVICE,
+            "files": confirm_files,
+            "page_selection_allowed": len(prepared) == 1 and prepared[0]["kind"] == "pdf",
+        })
+
+    # 5. فحص التكرار يسبق المعالجة حتى لا ينتظر المستخدم OCR بلا فائدة
     for p in prepared:
         duplicate = find_duplicate(p["name"], p["hash"])
         if not duplicate:
@@ -307,10 +449,10 @@ async def upload_document(
             # داخل دفعة: نتخطى المكرر ونكمل الباقي، وتظهر حالته في تقرير المهمة
             p["skip"] = True
 
-    # 4. إنشاء المهمة وإرسالها للطابور — الرد فوري ولا ينتظر المعالجة
+    # 6. إنشاء المهمة وإرسالها للطابور — الرد فوري ولا ينتظر المعالجة
     paged = len(prepared) == 1 and prepared[0]["kind"] == "pdf" and not prepared[0]["skip"]
     job_id = jobs.create_job(
-        label=prepared[0]["name"] if len(prepared) == 1 else f"{len(prepared)} صور",
+        label=prepared[0]["name"] if len(prepared) == 1 else f"{len(prepared)} ملفات",
         item_names=[p["name"] for p in prepared],
     )
     jobs.submit(job_id, lambda: _process_upload_job(job_id, prepared, paged))
@@ -318,6 +460,7 @@ async def upload_document(
     return JSONResponse(status_code=202, content={
         "job_id": job_id,
         "queued": [p["name"] for p in prepared],
+        "workspace": workspace,
     })
 
 if __name__ == "__main__":

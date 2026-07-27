@@ -365,7 +365,7 @@ project ever needs is the one-time OCR model download during setup.
 
 Both of us worked across the stack; these are the areas each of us led.
 
-- **Link-Top** — Backend foundations: the initial FastAPI server, the hybrid ingestion routing for PDFs and images (PyMuPDF & EasyOCR), and the first SQLite FTS5 setup.
+- **Link-Top** — Backend foundations: the initial FastAPI server, the hybrid ingestion routing for PDFs and images (PyMuPDF & EasyOCR), and the first SQLite FTS5 setup. He was also responsible for benchmarking these components to validate ingestion accuracy and query performance.
 - **AnmarTiger** — Search engine, ingestion and product surface: the Arabic normalization algorithm and the FTS5 search mechanics (BM25 ranking, per-line matching with page and line numbers, highlighting); DOCX and TXT ingestion; duplicate detection with overwrite/cancel; and the web UI end to end — drag-and-drop ingest, the results view, and the modular CSS/JS front end.
 
 ## License

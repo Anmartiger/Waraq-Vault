@@ -6,7 +6,7 @@ strict short-token matching, language detection and per-format units.
 
 Run:  .venv/Scripts/python.exe tests/test_regression.py   (needs: pip install httpx)
 The real waraq.db is never touched."""
-import sys, os, types, time, tempfile, sqlite3
+import sys, os, io, types, time, tempfile, sqlite3, zipfile
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -84,9 +84,12 @@ with client:
     r = upload(client, [("empty.png", b"", "image/png")])
     check("0-byte file -> 400", r.status_code == 400, r.text)
     r = upload(client, [(f"i{i}.png", PNG + bytes([i]), "image/png") for i in range(6)])
-    check("6 files -> 400 (max 5)", r.status_code == 400, r.text)
-    r = upload(client, [("a.png", PNG, "image/png"), ("b.pdf", b"%PDF-1.7", "application/pdf")])
-    check("mixed batch -> 400 (images only)", r.status_code == 400, r.text)
+    check("6 images -> 400 (max 5 images)", r.status_code == 400, r.text)
+    r = upload(client, [("mix_img.png", PNG + b"MIX", "image/png"), ("mix_doc.pdf", blank_pdf(1), "application/pdf")])
+    check("mixed image+pdf batch now ACCEPTED (202)", r.status_code == 202, r.text)
+    if r.status_code == 202:
+        j = wait_job(client, r.json()["job_id"])
+        check("mixed batch fully indexed", j["state"] == "done" and len(j["result"]["indexed"]) == 2, str(j.get("result")))
     r = upload(client, [("old.doc", b"junk", "application/msword")])
     check(".doc -> 400 with guidance", r.status_code == 400 and "docx" in r.text)
 
@@ -153,9 +156,10 @@ with client:
     print("\n=== P8: force_ocr flag reaches the PDF engine ===")
     calls = {}
     orig = main.process_hybrid_pdf
-    def spy(pdf_bytes, ocr_fn, force_ocr=False, progress=None, is_cancelled=None):
+    def spy(pdf_bytes, ocr_fn, force_ocr=False, pages=None, progress=None, is_cancelled=None):
         calls["force_ocr"] = force_ocr
-        return orig(pdf_bytes, ocr_fn, force_ocr=force_ocr, progress=progress, is_cancelled=is_cancelled)
+        return orig(pdf_bytes, ocr_fn, force_ocr=force_ocr, pages=pages,
+                    progress=progress, is_cancelled=is_cancelled)
     main.process_hybrid_pdf = spy
     r = upload(client, [("hybrid.pdf", blank_pdf(1), "application/pdf")], force_ocr=True)
     wait_job(client, r.json()["job_id"])
@@ -230,6 +234,170 @@ with client:
     print("\n=== /status reports the OCR device ===")
     st = client.get("/status").json()
     check("device string present", "CPU (stub)" in st["ingestion_pipeline"], st["ingestion_pipeline"])
+
+    print("\n=== U1: workspaces — grouping, filtering, one-shot group deletion ===")
+    r = upload(client, [("w1.txt", "تقرير المشروع الاول".encode("utf-8"), "text/plain")], workspace="مشاريع 2026")
+    wait_job(client, r.json()["job_id"])
+    r = upload(client, [("w2.txt", "تقرير المشروع الثاني".encode("utf-8"), "text/plain")], workspace="مشاريع 2026")
+    wait_job(client, r.json()["job_id"])
+    ws = client.get("/workspaces").json()["workspaces"]
+    target = next((w for w in ws if w["name"] == "مشاريع 2026"), None)
+    check("workspace listed with correct count", target is not None and target["count"] == 2, str(ws))
+    docs_ws = client.get("/documents", params={"workspace": "مشاريع 2026"}).json()
+    check("/documents?workspace filters", docs_ws["count"] == 2 and
+          all(d["workspace"] == "مشاريع 2026" for d in docs_ws["documents"]))
+    s = client.get("/search", params={"q": "المشروع", "workspace": "مشاريع 2026"}).json()
+    check("search scoped to workspace", s["count"] == 2, str(s["count"]))
+    s = client.get("/search", params={"q": "المشروع", "workspace": "لا وجود"}).json()
+    check("other workspace -> empty", s["count"] == 0)
+    r = client.delete("/workspaces/مشاريع 2026")
+    check("workspace deleted in one shot (2 docs)", r.status_code == 200 and r.json()["deleted"] == 2, r.text)
+    check("workspace gone from list", all(w["name"] != "مشاريع 2026" for w in client.get("/workspaces").json()["workspaces"]))
+    check("missing workspace delete -> 404", client.delete("/workspaces/مشاريع 2026").status_code == 404)
+
+    print("\n=== U1b: bulk deletion of selected files ===")
+    ids = []
+    for nm in ("b1.txt", "b2.txt", "b3.txt"):
+        r = upload(client, [(nm, f"محتوى {nm} للحذف الجماعي".encode("utf-8"), "text/plain")])
+        wait_job(client, r.json()["job_id"])
+    docs = client.get("/documents").json()["documents"]
+    ids = [d["id"] for d in docs if d["filename"] in ("b1.txt", "b2.txt")]
+    r = client.post("/documents/delete", json={"ids": ids})
+    check("bulk delete -> 2 rows", r.status_code == 200 and r.json()["deleted"] == 2, r.text)
+    con = sqlite3.connect(TMPDB)
+    nd = con.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    nf = con.execute("SELECT COUNT(*) FROM documents_fts").fetchone()[0]
+    con.close()
+    check("FTS stays in sync after bulk delete", nd == nf, f"docs={nd} fts={nf}")
+
+    print("\n=== U2: 50-file text batches allowed; Force OCR re-restricts ===")
+    many = [(f"t{i}.txt", f"ملف نصي رقم {i} سريع".encode("utf-8"), "text/plain") for i in range(12)]
+    r = upload(client, many)
+    check("12 text files accepted (no lazy 1-file limit)", r.status_code == 202, r.text)
+    j = wait_job(client, r.json()["job_id"])
+    check("all 12 indexed", len(j["result"]["indexed"]) == 12, str(len(j["result"]["indexed"])))
+    r = upload(client, [(f"t{i}.txt", b"x y z", "text/plain") for i in range(51)])
+    check("51 files -> 400", r.status_code == 400)
+    r = upload(client, [("f1.txt", b"a b c", "text/plain"), ("f2.txt", b"d e f", "text/plain")], force_ocr=True)
+    check("Force OCR + 2 text files -> 400 (strict again)", r.status_code == 400, r.text)
+    r = upload(client, [("fo1.png", PNG + b"F1", "image/png"), ("fo2.png", PNG + b"F2", "image/png")], force_ocr=True)
+    check("Force OCR + 2 images (<=5) still allowed", r.status_code == 202, r.text)
+    wait_job(client, r.json()["job_id"])
+
+    print("\n=== U3/U8: clean index — no page markers in stored text, pages via page_map ===")
+    r = upload(client, [("clean3.pdf", blank_pdf(3), "application/pdf")])
+    j = wait_job(client, r.json()["job_id"])
+    check("3-page scanned pdf indexed", j["state"] == "done", str(j))
+    con = sqlite3.connect(TMPDB)
+    raw = con.execute("SELECT raw_text, page_map FROM documents WHERE filename='clean3.pdf'").fetchone()
+    con.close()
+    check("raw_text contains NO page markers", "--- صفحة" not in raw[0], raw[0][:80])
+    check("page_map stored instead", raw[1] is not None and "1" in raw[1])
+    s = client.get("/search", params={"q": "stub"}).json()
+    hit = next(x for x in s["results"] if x["filename"] == "clean3.pdf")
+    check("matches carry real pages from page_map",
+          [m.get("page") for m in hit["matches"]] == [1, 2, 3], str(hit["matches"]))
+    s2 = client.get("/search", params={"q": "صفحة"}).json()
+    check("searching the word صفحة finds no injected junk",
+          all(x["filename"] != "clean3.pdf" for x in s2.get("results", [])))
+
+    print("\n=== U5: big scanned PDFs need explicit confirmation + page selection ===")
+    r = upload(client, [("book12.pdf", blank_pdf(12), "application/pdf")])
+    check("12 scanned pages -> 413 confirm_ocr", r.status_code == 413, r.text)
+    d = r.json()["detail"]
+    check("payload has estimate + device + files", d.get("reason") == "confirm_ocr"
+          and d.get("estimate_seconds", 0) > 0 and d.get("files") and d.get("page_selection_allowed") is True, str(d))
+    r = upload(client, [("book12.pdf", blank_pdf(12), "application/pdf")], confirmed=True)
+    check("confirmed=true proceeds (202)", r.status_code == 202, r.text)
+    j = wait_job(client, r.json()["job_id"])
+    check("confirmed job completes", j["state"] == "done")
+    r = upload(client, [("subset.pdf", blank_pdf(15), "application/pdf")], pages="2-3")
+    check("pages=2-3 keeps scanned count under threshold (202)", r.status_code == 202, r.text)
+    j = wait_job(client, r.json()["job_id"])
+    s = client.get("/search", params={"q": "stub"}).json()
+    hit = next(x for x in s["results"] if x["filename"] == "subset.pdf")
+    check("only pages 2-3 processed, real page numbers kept",
+          hit["match_count"] == 2 and [m.get("page") for m in hit["matches"]] == [2, 3], str(hit["matches"]))
+    r = upload(client, [("subset.pdf", blank_pdf(15), "application/pdf")], pages="9-99")
+    check("out-of-range pages -> 400", r.status_code == 400, r.text)
+
+    print("\n=== U6: spoofed extensions rejected by content signature ===")
+    odt = io.BytesIO()
+    with zipfile.ZipFile(odt, "w") as z:
+        z.writestr("mimetype", "application/vnd.oasis.opendocument.text")
+        z.writestr("content.xml", "<x/>")
+    r = upload(client, [("roro.pdf", odt.getvalue(), "application/pdf")])
+    check("ODT renamed to .pdf -> 400 naming real type",
+          r.status_code == 400 and "ODT" in r.text, r.text[:160])
+    con = sqlite3.connect(TMPDB)
+    n = con.execute("SELECT COUNT(*) FROM documents WHERE filename='roro.pdf'").fetchone()[0]
+    con.close()
+    check("no garbage row was inserted", n == 0)
+    r = upload(client, [("fake.docx", b"%PDF-1.7 not a docx", _DOCX := "application/vnd.openxmlformats-officedocument.wordprocessingml.document")])
+    check("PDF renamed to .docx -> 400", r.status_code == 400)
+    r = upload(client, [("bmw.txt", "BMW cars are fast and reliable on highways.".encode("utf-8"), "text/plain")])
+    check("text starting with 'BM' NOT misdetected as BMP", r.status_code == 202, r.text)
+    wait_job(client, r.json()["job_id"])
+
+    print("\n=== U7: Force OCR reads images embedded in DOCX ===")
+    from docx import Document as _Doc
+    from PIL import Image as _Img
+    png_buf = io.BytesIO()
+    _Img.new("RGB", (24, 24), (200, 180, 120)).save(png_buf, format="PNG")
+    dx = _Doc()
+    dx.add_paragraph("هذا المستند يحتوي صورة مدمجة داخل الملف للتجربة الكاملة")
+    dx.add_picture(io.BytesIO(png_buf.getvalue()))
+    dxb = io.BytesIO(); dx.save(dxb)
+    r = upload(client, [("media.docx", dxb.getvalue(),
+                         "application/vnd.openxmlformats-officedocument.wordprocessingml.document")], force_ocr=True)
+    check("docx + force_ocr accepted", r.status_code == 202, r.text)
+    j = wait_job(client, r.json()["job_id"])
+    con = sqlite3.connect(TMPDB)
+    raw = con.execute("SELECT raw_text FROM documents WHERE filename='media.docx'").fetchone()[0]
+    con.close()
+    check("embedded image text extracted via OCR", "stub ocr line" in raw, raw[:120])
+    dx_b = _Doc()
+    dx_b.add_paragraph("مستند ثانٍ مختلف المحتوى يحوي صورة مدمجة ايضا للتجربة")
+    dx_b.add_picture(io.BytesIO(png_buf.getvalue()))
+    dxb2 = io.BytesIO(); dx_b.save(dxb2)
+    r = upload(client, [("media2.docx", dxb2.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")])
+    j = wait_job(client, r.json()["job_id"])
+    con = sqlite3.connect(TMPDB)
+    raw2 = con.execute("SELECT raw_text FROM documents WHERE filename='media2.docx'").fetchone()[0]
+    con.close()
+    check("without force_ocr embedded images are NOT OCRed", "stub ocr line" not in raw2)
+
+    print("\n=== U3b: DOCX headings merge — no jumpy paragraph numbers ===")
+    dx2 = _Doc()
+    dx2.add_paragraph("تاريخ السيارات")                 # عنوان قصير (كلمتان)
+    dx2.add_paragraph("")                               # سطر فارغ
+    dx2.add_paragraph("بدأت صناعة السيارات في نهاية القرن التاسع عشر وتطورت بسرعة كبيرة.")
+    dx2.add_paragraph("")
+    dx2.add_paragraph("محركات حديثة")                   # عنوان قصير آخر
+    dx2.add_paragraph("ظهرت المحركات الكهربائية لاحقا وغيرت شكل الصناعة بالكامل.")
+    b2 = io.BytesIO(); dx2.save(b2)
+    r = upload(client, [("history.docx", b2.getvalue(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")])
+    wait_job(client, r.json()["job_id"])
+    con = sqlite3.connect(TMPDB)
+    raw3 = con.execute("SELECT raw_text FROM documents WHERE filename='history.docx'").fetchone()[0]
+    con.close()
+    lines3 = raw3.split("\n")
+    check("exactly 2 dense blocks (headings merged, empties dropped)", len(lines3) == 2, str(lines3))
+    check("heading merged into its paragraph", lines3[0].startswith("تاريخ السيارات — "), lines3[0][:60])
+
+    print("\n=== U8b: smart merge builds coherent paragraphs from OCR lines ===")
+    from engine.textflow import smart_join
+    joined = smart_join(["النص الأول يستمر", "حتى نهاية الجملة هنا.", "جملة جديدة تبدأ", "وتنتهي أيضا؟", "بقايا بلا نهاية"])
+    check("terminal punctuation closes paragraphs",
+          joined == "النص الأول يستمر حتى نهاية الجملة هنا.\nجملة جديدة تبدأ وتنتهي أيضا؟\nبقايا بلا نهاية", joined)
+
+    print("\n=== legacy rows: old marker-based pages still resolve ===")
+    database.insert_document("legacy.pdf", "application/pdf",
+                             "--- صفحة 7 ---\nسطر قديم يذكر الارشيف هنا", "h-legacy")
+    hit = next(r_ for r_ in database.search_documents("الارشيف") if r_["filename"] == "legacy.pdf")
+    check("legacy marker still yields page 7", hit["matches"][0].get("page") == 7, str(hit["matches"]))
+    check("legacy marker line itself is not a result",
+          all("---" not in m["text"] for m in hit["matches"]))
 
 print(f"\n{'='*60}\nPASSED: {PASS}   FAILED: {len(FAIL)}")
 for f in FAIL: print("  ✗", f)

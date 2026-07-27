@@ -41,8 +41,15 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 
 ## What it does today
 
+- **Dark &amp; light modes** &mdash; a vault-at-night theme and a daylight reading-room theme,
+  toggled from the header and remembered between visits.
+- **File manager sidebar** &mdash; browse the whole archive, filter by workspace, type or name,
+  select many files at once and delete them in one action.
+- **Workspaces** &mdash; group documents on upload (a flat tag, not nested folders), search inside
+  one group, or delete a whole group in a single shot.
 - **Drag-and-drop ingest** &mdash; drop files (or click) and they are read, indexed and searchable.
-- **Multi-image upload** &mdash; up to 5 images in one go, with a live status per image.
+- **Batch upload that matches the real cost** &mdash; up to **50** PDF/DOCX/TXT files at once
+  (text extraction is cheap), up to **5 images** (OCR is not), with a live status per file.
 - **Background processing with real progress** &mdash; uploads return immediately; a progress bar
   advances on actual per-page / per-image completion events, and a **Cancel** button stops
   the job at the next safe point. The UI never freezes, whatever the file size.
@@ -61,10 +68,15 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
   it restores full-archive search.
 - **Delete from the archive** &mdash; remove a document (with confirmation); its search-index
   entries go with it, no orphaned rows.
+- **Large scans ask first** &mdash; a PDF needing OCR on more than 10 pages opens a confirmation
+  with a time estimate for *your* hardware, and lets you process **only the pages you name**
+  (`1-10, 15, 22-30`) instead of the whole book.
 - **Duplicate detection** &mdash; re-uploading a known file prompts you to *overwrite* or *cancel*,
   before any processing starts; renamed copies are caught by content hash.
 - **Force OCR** &mdash; a toggle for hybrid PDFs (text + embedded scans) that processes every page
-  as an image instead of trusting the text layer.
+  as an image, and reads images embedded inside DOCX files.
+- **Honest file typing** &mdash; a file's real content signature must match its extension, so an
+  ODT renamed to `.pdf` is rejected with a clear message instead of poisoning the index.
 - **RTL-aware UI** &mdash; each result line picks its own direction, so Arabic and English both read correctly.
 
 ## Supported formats
@@ -161,10 +173,13 @@ The UI is a thin client over four local endpoints.
 |---|---|---|
 | `GET` | `/` | Serves the UI |
 | `GET` | `/status` | Health + the active OCR device (GPU name, or CPU with thread count) |
-| `GET` | `/search?q=…&doc_id=…` | Search; needs ≥ 2 characters. Optional `doc_id` restricts the scope |
-| `GET` | `/documents` | List indexed documents (feeds the scope filter and deletion) |
+| `GET` | `/search?q=…` | Search; needs ≥ 2 characters. Optional `doc_id` / `workspace` narrow the scope |
+| `GET` | `/documents` | List indexed documents (feeds the file manager); optional `workspace` |
 | `DELETE` | `/documents/{id}` | Delete one document; the FTS index entry goes with it |
-| `POST` | `/upload` | Multipart `file` ×1–5, optional `overwrite`, `force_ocr`. Returns **202 + job id** |
+| `POST` | `/documents/delete` | Bulk delete — JSON body `{ "ids": [1,2,3] }` |
+| `GET` | `/workspaces` | List workspaces with their document counts |
+| `DELETE` | `/workspaces/{name}` | Delete a whole workspace and every document in it |
+| `POST` | `/upload` | Multipart `file` ×1–50 (≤5 images), optional `overwrite`, `force_ocr`, `workspace`, `pages`, `confirmed`. Returns **202 + job id** |
 | `GET` | `/jobs/{id}` | Job progress: percent, current page/image, per-file statuses, queue position |
 | `POST` | `/jobs/{id}/cancel` | Cancel a queued or running job at the next safe point |
 
@@ -195,9 +210,20 @@ a time. The UI polls `GET /jobs/{id}`, whose progress counters advance on real p
 per-image completion events, and shows the final report from `job.result`
 (`{ indexed, skipped, failed, replaced }`).
 
-If a single uploaded document is already indexed, `/upload` returns **409 Conflict** immediately
-(before any OCR), and the UI turns that into an overwrite / cancel prompt — inside an image
-batch, duplicates are skipped and reported per item instead:
+Two responses interrupt the flow on purpose, both *before* any OCR runs. A **413** means the
+upload would OCR more than 10 scanned pages — the body carries the page counts, a time estimate
+for the detected device, and whether page selection is possible, which the UI turns into a
+consent dialog:
+
+```jsonc
+{ "detail": { "reason": "confirm_ocr", "total_scanned_pages": 40, "estimate_seconds": 600,
+              "device": "CPU (31 threads)", "page_selection_allowed": true,
+              "files": [ { "name": "book.pdf", "total_pages": 42, "scanned_pages": 40 } ] } }
+```
+
+Re-send with `confirmed=true` (and optionally `pages=1-10,15`) to proceed. A **409** means a single
+uploaded document is already indexed, which the UI turns into an overwrite / cancel prompt —
+inside a batch, duplicates are skipped and reported per item instead:
 
 ```jsonc
 { "detail": { "reason": "duplicate", "match": "content", "filename": "notes.txt", "indexed_at": "…" } }
@@ -212,13 +238,16 @@ or `"filename"` when the name matches but the contents changed.
 |---|---|
 | [`main.py`](main.py) | FastAPI app: routing, format detection, duplicate checks, the four endpoints |
 | [`engine/database.py`](engine/database.py) | Arabic normalization, FTS5 schema, search, per-line matching, duplicate lookup |
-| [`engine/pdf_engine.py`](engine/pdf_engine.py) | Hybrid PDF extraction &mdash; text layer, with OCR fallback per page |
-| [`engine/docx_engine.py`](engine/docx_engine.py) | DOCX extraction in document order, with page numbers from Word's markers |
+| [`engine/pdf_engine.py`](engine/pdf_engine.py) | Hybrid PDF extraction, page pre-check, page subsets, OCR fallback per page |
+| [`engine/docx_engine.py`](engine/docx_engine.py) | DOCX extraction in document order, heading merging, embedded-image OCR |
 | [`engine/text_engine.py`](engine/text_engine.py) | Plain-text decoding with Arabic encoding fallbacks |
-| [`engine/ocr_engine.py`](engine/ocr_engine.py) | EasyOCR reader for images (Arabic + English) |
-| [`ui/index.html`](ui/index.html) | Page markup, rendered through Jinja2 |
-| [`ui/css/`](ui/css) | `base.css` (tokens, shell) and `components.css` (search, cards, uploader, dialog) |
-| [`ui/js/`](ui/js) | ES modules: `app` (entry), `search`, `upload`, `results`, `modal`, `dom`, `utils` |
+| [`engine/ocr_engine.py`](engine/ocr_engine.py) | GPU-detecting EasyOCR reader with CPU fallback (Arabic + English) |
+| [`engine/jobs.py`](engine/jobs.py) | The background job queue: progress events, cancellation, per-item status |
+| [`engine/textflow.py`](engine/textflow.py) | Smart OCR line merging and page-map lookup, shared by all engines |
+| [`ui/index.html`](ui/index.html) | The app shell markup, rendered through Jinja2 |
+| [`ui/css/`](ui/css) | `base.css` (dark + light tokens, app grid) and `components.css` (panels, cards, dialogs) |
+| [`ui/js/`](ui/js) | ES modules: `app` (entry), `theme`, `files`, `search`, `upload`, `results`, `modal`, `dom`, `utils` |
+| [`tests/test_regression.py`](tests/test_regression.py) | 93-check end-to-end suite (stubbed OCR, throwaway DB) |
 | [`docs/plan.md`](docs/plan.md) | The build plan &amp; team roles for the sprint |
 | `waraq.db` | The local SQLite index. Created on first run, and git-ignored &mdash; it is rebuildable |
 
@@ -236,6 +265,9 @@ or `"filename"` when the name matches but the contents changed.
 - **ES modules need HTTP.** Open the app through the server, not by double-clicking `ui/index.html`.
 - **Re-indexing.** Text is extracted once at upload time, so changes to an extraction engine only
   affect documents uploaded afterwards. Re-upload and choose *Overwrite* to refresh one.
+- **Upgrading is safe.** New columns are added by in-place `ALTER TABLE` migrations on startup —
+  you never need to delete `waraq.db` to pick up a new version. Documents indexed by older
+  versions keep working, including their page numbers.
 - **Starting over.** Stop the server and delete `waraq.db`; it is rebuilt empty on the next run.
 - **DOCX page numbers** come from the pagination Word recorded when it last saved the file. A
   document written by another tool, with no page breaks of its own, shows line numbers only &mdash;
@@ -261,6 +293,9 @@ project ever needs is the one-time OCR model download during setup.
 - [x] Multi-image upload (up to 5 per batch) with per-image status
 - [x] Manage the library: per-file search scope and deletion
 - [x] Arabic proclitic matching (`تخطيطا` ↔ `وتخطيطا`) and strict short-word search
+- [x] Dark / light themes and a full file-manager UI
+- [x] Workspaces, bulk deletion, and page-range selection for large scans
+- [x] Clean search index — no injected page markers, smart OCR paragraph merging
 - [ ] Open or reveal the original file from a result
 
 ## Team

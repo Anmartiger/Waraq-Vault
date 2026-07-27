@@ -5,9 +5,11 @@ import { showEmpty } from "./dom.js";
 import { initSearch } from "./search.js";
 import { initUpload } from "./upload.js";
 import { initShowMore } from "./results.js";
+import { initLibrary } from "./library.js";
 
 initSearch();
 initUpload();
 initShowMore();
+initLibrary();
 
 showEmpty("Start by searching, or upload a new document.");

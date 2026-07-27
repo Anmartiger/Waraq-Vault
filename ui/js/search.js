@@ -1,7 +1,7 @@
 // Search: GET /search?q=…
 
 import { escapeHtml } from "./utils.js";
-import { form, input, setStatus, showEmpty } from "./dom.js";
+import { form, input, setStatus, showEmpty, scopeSel } from "./dom.js";
 import { renderResults } from "./results.js";
 
 export function runSearch(q) {
@@ -12,7 +12,9 @@ export function runSearch(q) {
     return;
   }
   setStatus("Searching for <b>" + escapeHtml(q) + "</b> …");
-  fetch("/search?q=" + encodeURIComponent(q))
+  // Scope filter: restrict the search to one document when a file is selected.
+  var scope = scopeSel && scopeSel.value ? "&doc_id=" + encodeURIComponent(scopeSel.value) : "";
+  fetch("/search?q=" + encodeURIComponent(q) + scope)
     .then(function (res) { return res.json(); })
     .then(function (data) {
       var list = (data && data.results) || [];

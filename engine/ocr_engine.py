@@ -79,9 +79,10 @@ def run_ocr(image) -> list:
 
 def extract_text_from_image(image_source) -> str:
     """يستقبل مسار الصورة أو بايتاتها ويعيد النص المستخرج أو ينهار بخطأ واضح"""
+    from engine.textflow import smart_join
     try:
-        results = run_ocr(image_source)
-        return " \n ".join(results)
+        # دمج ذكي: مربعات القراءة تتحول لفقرات مترابطة بدل التمزيق الأعمى
+        return smart_join(run_ocr(image_source))
     except Exception as e:
         logger.error(f"OCR Engine Crash: {str(e)}")
         # نرفع الخطأ ولا نخفيه كنص عادي!

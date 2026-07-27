@@ -17,10 +17,30 @@
 
   <div class="wrap">
     <div id="drop" class="uploader" role="button" tabindex="0" aria-label="Upload a document">
-      <input id="file" type="file" accept="image/*,application/pdf,.pdf,.docx,.txt" hidden />
+      <input id="file" type="file" accept="image/*,application/pdf,.pdf,.docx,.txt" multiple hidden />
       <div class="up-icon">⬆️</div>
-      <div class="up-title">Drop a file here, or click to upload</div>
-      <div class="up-sub">PDF · Word (DOCX) · نص (TXT) · صورة (PNG / JPG) — تتم القراءة والفهرسة تلقائياً</div>
+      <div class="up-title">Drop files here, or click to upload</div>
+      <div class="up-sub">PDF · Word (DOCX) · نص (TXT) · صور (حتى 5 صور دفعة واحدة) — تتم القراءة والفهرسة تلقائياً</div>
+    </div>
+
+    <label class="forceocr" title="Process every PDF page as an image — for hybrid or scanned PDFs">
+      <input type="checkbox" id="force-ocr" />
+      Force OCR — treat PDF pages as images <span class="ar">(إجبار المعالجة كصور)</span>
+    </label>
+
+    <div id="progress" class="progress" hidden>
+      <div class="progress-top">
+        <span id="progress-label">Processing…</span>
+        <button type="button" id="progress-cancel" class="btn-cancel">Cancel</button>
+      </div>
+      <div class="progress-track"><div id="progress-bar" class="progress-fill"></div></div>
+      <div id="progress-items" class="progress-items"></div>
+    </div>
+
+    <div class="library">
+      <label for="scope">Search in:</label>
+      <select id="scope"><option value="">All files</option></select>
+      <button type="button" id="delete-doc" class="btn-del" disabled>Delete file</button>
     </div>
 
     <form class="search" method="get" action="/search">

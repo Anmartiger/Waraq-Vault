@@ -7,20 +7,41 @@ import { resultsEl } from "./dom.js";
 var INITIAL = 8;   // lines shown before the first "Show more"
 var BATCH   = 50;  // additional lines revealed per "Show more" click
 
+// Badge for the document's real language, detected by the backend.
+// Falls back to the old client-side heuristic for older payloads.
+function langBadge(r, sample) {
+  var lang = r.lang || (ARABIC.test(sample) ? "ar" : "en");
+  if (lang === "mixed") return '<span class="badge mixed">AR·EN</span>';
+  if (lang === "ar")    return '<span class="badge ar">AR</span>';
+  return '<span class="badge">EN</span>';
+}
+
 function cardHtml(r) {
   var matches = r.matches || [];
   var total = (r.match_count != null) ? r.match_count : matches.length;
   var sample = (matches[0] ? matches[0].text : "") + " " + (r.filename || "") + " " + (r.snippet || "");
-  var ar = ARABIC.test(sample);
+
+  // Numbering semantics differ per format: real lines (PDF/TXT), paragraphs
+  // (DOCX → ¶), and OCR blocks (images → no misleading number at all).
+  var unit = r.unit || "line";
 
   var body;
   if (matches.length) {
     var rows = matches.map(function (m, idx) {
+      var num = null, title = null;
+      if (unit === "para") {
+        num = "¶" + m.line;
+        title = (m.page != null ? "Page " + m.page + ", paragraph " + m.line : "Paragraph " + m.line);
+      } else if (unit === "line") {
+        num = "L" + m.line;
+        title = (m.page != null ? "Page " + m.page + ", line " + m.line : "Line " + m.line);
+      } else {
+        title = "Text block found by OCR — images have no real line numbers";
+      }
       var loc = (m.page != null ? '<span class="pg">p.' + m.page + '</span>' : "") +
-                '<span class="ln">L' + m.line + '</span>';
-      var title = (m.page != null ? "Page " + m.page + ", line " + m.line : "Line " + m.line);
+                (num ? '<span class="ln">' + num + '</span>' : "");
       return '<div class="line' + (idx >= INITIAL ? " extra" : "") + '" dir="auto">' +
-               '<span class="loc" title="' + title + '">' + loc + '</span>' +
+               (loc ? '<span class="loc" title="' + title + '">' + loc + '</span>' : "") +
                '<span class="linetext">' + renderHighlighted(m.text) + '</span>' +
              '</div>';
     }).join("");
@@ -42,7 +63,7 @@ function cardHtml(r) {
     '<div class="card">' +
       '<div class="meta">' +
         '<span class="fname">' + escapeHtml(r.filename) + "</span>" +
-        '<span class="badge ' + (ar ? "ar" : "") + '">' + (ar ? "AR" : "EN") + "</span>" +
+        langBadge(r, sample) +
         '<span class="badge">' + escapeHtml(typeLabel(r.content_type)) + "</span>" +
         '<span class="hits">' + total + " match" + (total === 1 ? "" : "es") + "</span>" +
       "</div>" +

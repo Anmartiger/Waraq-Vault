@@ -273,6 +273,80 @@ or `"filename"` when the name matches but the contents changed.
   document written by another tool, with no page breaks of its own, shows line numbers only &mdash;
   deliberately, rather than guessing a page and sending you to the wrong place.
 
+## OCR development &amp; benchmarking
+
+Notes for whoever is working on the recognition pipeline.
+
+### The seams
+
+Everything that touches OCR goes through **one function**, so a new engine or a new
+execution strategy is a local change, not a refactor:
+
+| File | What to change here |
+|---|---|
+| [`engine/ocr_engine.py`](engine/ocr_engine.py) | `run_ocr(image)` &mdash; the single entry point every caller uses. Device detection, thread pinning, and the CUDA-OOM fallback live here |
+| [`engine/pdf_engine.py`](engine/pdf_engine.py) | Page rasterisation: `fitz.Matrix(2, 2)` (the render zoom) and `TEXT_LAYER_THRESHOLD = 20` (when a page counts as scanned) |
+| [`engine/jobs.py`](engine/jobs.py) | `ThreadPoolExecutor(max_workers=1)` &mdash; the deliberate serialisation. Page-level parallelism starts here |
+| [`engine/textflow.py`](engine/textflow.py) | `smart_join()` &mdash; how OCR line boxes become searchable paragraphs |
+
+Check what hardware you actually got: `curl 127.0.0.1:8000/status`, or watch the startup
+log for `✅ OCR engine ready on …`. The header chip in the UI shows the same thing.
+
+### The benchmark harness
+
+Speed changes must be justified against **accuracy**, so the harness measures both:
+
+```bash
+.venv/Scripts/python.exe tools/bench_ocr.py --file "scan.pdf" --pages 5 --zoom 1.0,1.5,2.0,3.0
+```
+
+It renders the same pages under each setting, times render and OCR separately, and scores the
+extracted text against the production baseline (zoom 2.0) using the *same Arabic normalisation
+the search index uses* &mdash; so a config that reads Arabic worse is flagged, not rewarded.
+`--threads 8,16,31` additionally sweeps CPU thread counts.
+
+A real run on this machine (synthetic 1-page English scan, CPU, 31 threads):
+
+```
+config                     render s/pg   ocr s/pg  total s/pg    chars  accuracy  speedup
+zoom 2.0 (baseline)               0.12       4.98        5.10       95   100.0%    1.00x
+zoom 1.0                          0.01       1.61        1.62       93    87.2%    3.15x  ✗ BAD
+8 CPU threads                     0.12       6.51        6.63       95   100.0%    0.77x
+```
+
+Two lessons already visible: halving the zoom is **3× faster but loses 13% of the text** &mdash;
+exactly the trade the harness exists to catch; and fewer threads was *slower*, so thread tuning
+needs measuring rather than guessing. Benchmark on **real Arabic scans with `--pages 5`+**;
+single-page runs vary by ~20% and English text is not representative.
+
+### Known levers, ranked
+
+| Lever | Expected gain | Accuracy risk | Status |
+|---|---|---|---|
+| **CUDA GPU** | **10–30×** | none | Already supported &mdash; plug one in, it is detected at startup |
+| Page-level parallelism (3–4 workers × ~8 threads) | ~2–3× on a 32-core box | none (same model, same pixels) | Not done. Needs one reader per worker (~1 GB each); `max_workers` in `jobs.py` |
+| Skip blank pages before OCR | saves a full page each | none | Not done. Cheap pixel-variance check in `pdf_engine.py` |
+| Thread-count tuning | measured, not assumed | none | Use `--threads`; on this box more threads won |
+| Use the embedded scan image instead of re-rendering | modest, sometimes *more* accurate | none | Not done. `page.get_images()` avoids resampling |
+| Batched recognition (`batch_size`) | real on GPU, small on CPU | none | Worth doing once a GPU exists |
+| Lower render zoom | large | **high** &mdash; measured 87% above | Not recommended without per-corpus proof |
+| Engine swap (PaddleOCR / RapidOCR) or ONNX export | 2–4× | needs full revalidation | Big change; see the caveat below |
+
+### Ground rules
+
+- **Do not "fix" the reversed RTL output.** EasyOCR returns Arabic tokens in reverse visual
+  order; the index and the query are normalised identically, so search works. `/status` says
+  so explicitly. Changing it silently breaks matching.
+- **Keep `run_ocr`'s contract**: takes a path, bytes, or a numpy array; returns a list of
+  strings. Every caller (images, PDF pages, DOCX embedded media) depends on that shape.
+- **Recalibrate the user-facing estimate** in `main.py` (`_EST_SEC_PER_PAGE_CPU = 15.0`,
+  `_EST_SEC_PER_PAGE_GPU = 1.5`) once you have real numbers &mdash; it drives the "~N min" the
+  confirmation dialog promises, and the threshold `_CONFIRM_SCANNED_PAGES = 10`.
+- **Run the suite before and after**: `.venv/Scripts/python.exe tests/test_regression.py`
+  (93 checks). It stubs `engine.ocr_engine` in `sys.modules`, so it runs in seconds without
+  loading any model &mdash; meaning it validates *routing, indexing and search*, not recognition
+  quality. Recognition quality is what the benchmark harness is for.
+
 ## Privacy
 
 Documents are read, indexed and searched entirely on your machine. Extracted text lives in the local

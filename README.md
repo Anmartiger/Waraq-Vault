@@ -319,18 +319,7 @@ exactly the trade the harness exists to catch; and fewer threads was *slower*, s
 needs measuring rather than guessing. Benchmark on **real Arabic scans with `--pages 5`+**;
 single-page runs vary by ~20% and English text is not representative.
 
-### Known levers, ranked
 
-| Lever | Expected gain | Accuracy risk | Status |
-|---|---|---|---|
-| **CUDA GPU** | **10–30×** | none | Already supported &mdash; plug one in, it is detected at startup |
-| Page-level parallelism (3–4 workers × ~8 threads) | ~2–3× on a 32-core box | none (same model, same pixels) | Not done. Needs one reader per worker (~1 GB each); `max_workers` in `jobs.py` |
-| Skip blank pages before OCR | saves a full page each | none | Not done. Cheap pixel-variance check in `pdf_engine.py` |
-| Thread-count tuning | measured, not assumed | none | Use `--threads`; on this box more threads won |
-| Use the embedded scan image instead of re-rendering | modest, sometimes *more* accurate | none | Not done. `page.get_images()` avoids resampling |
-| Batched recognition (`batch_size`) | real on GPU, small on CPU | none | Worth doing once a GPU exists |
-| Lower render zoom | large | **high** &mdash; measured 87% above | Not recommended without per-corpus proof |
-| Engine swap (PaddleOCR / RapidOCR) or ONNX export | 2–4× | needs full revalidation | Big change; see the caveat below |
 
 ### Ground rules
 

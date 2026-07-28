@@ -294,15 +294,15 @@ def _detect_lang(text: str) -> str:
 def _unit_for(content_type: str) -> str:
     """
     وحدة الترقيم الصادقة لكل نوع ملف:
-    - الصور: كتل OCR لا "أسطر" حقيقية ← تُخفى الأرقام في الواجهة (block)
-    - DOCX: فقرات وليست أسطراً بصرية ← تُعرض ¶ بدل L (para)
+    - الصور: كتل OCR لا "أسطر" حقيقية ← بلا أي رقم موضع (block)
+    - DOCX: رقم الفقرة لا يعني شيئاً للقارئ ← الصفحة وحدها تكفي (page)
     - PDF/TXT: أسطر فعلية ← تُعرض L (line)
     """
     ct = (content_type or "").lower()
     if ct.startswith("image/"):
         return "block"
     if "wordprocessingml" in ct or ct == "application/msword":
-        return "para"
+        return "page"
     return "line"
 
 def search_documents(query: str, limit: int = 20, doc_ids: list = None, workspace: str = None) -> list:

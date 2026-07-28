@@ -224,10 +224,10 @@ with client:
     check("english doc -> en", langs.get("en.txt") == "en", str(langs))
     check("mixed doc -> mixed", langs.get("mix.txt") == "mixed", str(langs))
 
-    print("\n=== P6: DOCX results use paragraph units (¶ in the UI) ===")
+    print("\n=== P6: DOCX results are positioned by page only (no paragraph marker) ===")
     database.insert_document("word.docx", main._DOCX_TYPE, "--- صفحة 1 ---\nفقرة اولى عن الارشيف\nفقرة ثانية", "h-dx")
     hit = next(r_ for r_ in database.search_documents("الارشيف") if r_["filename"] == "word.docx")
-    check("docx unit is para", hit["unit"] == "para")
+    check("docx unit is page (no ¶ counter in the UI)", hit["unit"] == "page", hit["unit"])
     check("docx keeps its page number", hit["matches"][0].get("page") == 1)
 
     print("\n=== hardening: quoted/punctuated queries don't break FTS ===")

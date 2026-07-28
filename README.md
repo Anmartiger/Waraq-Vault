@@ -59,7 +59,7 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 - **Live search** &mdash; results update as you type (300&nbsp;ms debounce, minimum 2 characters).
 - **Every match, not just one** &mdash; each document lists *all* of its matching lines, not a single snippet.
 - **Honest locations** &mdash; PDF/TXT hits are labelled `p.12 / L340`, Word hits show real
-  paragraphs (`¶12`), and image hits show clean OCR text with no invented line numbers.
+  page (`p.12`), and image hits show clean OCR text &mdash; no invented positions anywhere.
 - **Arabic that actually matches** &mdash; searching `تخطيطا` also finds `وتخطيطا` / `بالتخطيط`
   (attached conjunctions, prepositions and the definite article), while short words like
   `في` and `مع` match only as whole words &mdash; no more highlights inside unrelated words.
@@ -84,7 +84,7 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 | Format | How the text is extracted | Page numbers |
 |---|---|---|
 | **PDF** | PyMuPDF text layer; pages with little or no text fall back to OCR | ✅ real pages |
-| **DOCX** | python-docx &mdash; paragraphs, tables and content controls, in document order | ✅ pages from Word's saved pagination, positions as paragraphs (¶) |
+| **DOCX** | python-docx &mdash; paragraphs, tables and content controls, in document order | ✅ page numbers from Word's saved pagination |
 | **TXT** | decoded as UTF‑8, then cp1256 / ISO‑8859‑6 for Arabic files saved on Windows | line numbers only |
 | **Images** (PNG, JPG, BMP, TIFF, WEBP) | EasyOCR (Arabic + English) | OCR text blocks &mdash; no line numbers (images have none) |
 

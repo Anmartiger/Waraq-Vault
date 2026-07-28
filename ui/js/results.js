@@ -21,20 +21,22 @@ function cardHtml(r) {
   var total = (r.match_count != null) ? r.match_count : matches.length;
   var sample = (matches[0] ? matches[0].text : "") + " " + (r.filename || "") + " " + (r.snippet || "");
 
-  // Numbering semantics differ per format: real lines (PDF/TXT), paragraphs
-  // (DOCX → ¶), and OCR blocks (images → no misleading number at all).
+  // Numbering semantics differ per format: real lines (PDF/TXT), page-only
+  // (DOCX), and OCR blocks (images → no misleading position at all).
   var unit = r.unit || "line";
 
   var body;
   if (matches.length) {
     var rows = matches.map(function (m, idx) {
-      var num = null, title = null;
-      if (unit === "para") {
-        num = "¶" + m.line;
-        title = (m.page != null ? "Page " + m.page + ", paragraph " + m.line : "Paragraph " + m.line);
-      } else if (unit === "line") {
+      // Only real, verifiable positions get a number: PDF/TXT have true lines.
+      // DOCX shows its page alone (a paragraph index means nothing to a reader),
+      // and images get no position at all.
+      var num = null, title;
+      if (unit === "line") {
         num = "L" + m.line;
         title = (m.page != null ? "Page " + m.page + ", line " + m.line : "Line " + m.line);
+      } else if (m.page != null) {
+        title = "Page " + m.page;
       } else {
         title = "Text block found by OCR — images have no real line numbers";
       }

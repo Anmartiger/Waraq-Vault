@@ -459,6 +459,27 @@ with client:
     check("style lookup failure falls back to word count",
           _is_heading(_FakePara(), "two words") is True and _is_heading(_FakePara(), "this has four words") is False)
 
+    print("\n=== G4: the RTL storage policy, locked in ===")
+    # Real text as EasyOCR actually stored it for an Arabic scan in this project.
+    REAL = "وتم نفيه باتجاه مراكش تحت حراسة مشددة"
+    database.insert_document("rtl_real.jpg", "image/png", REAL, "h-rtl1")
+    database.insert_document("rtl_wordrev.jpg", "image/png", " ".join(REAL.split()[::-1]), "h-rtl2")
+    database.insert_document("rtl_charrev.jpg", "image/png", REAL[::-1], "h-rtl3")
+    names = lambda rs: {r_["filename"] for r_ in rs}
+
+    check("word order is irrelevant to matching (AND, not phrase)",
+          "rtl_real.jpg" in names(database.search_documents("مراكش نفيه")) and
+          "rtl_real.jpg" in names(database.search_documents("نفيه مراكش")))
+    check("a word-reordered document is still findable",
+          "rtl_wordrev.jpg" in names(database.search_documents("نفيه مراكش")))
+    check("character-reversed text is UNFINDABLE — never do it",
+          "rtl_charrev.jpg" not in names(database.search_documents("مراكش")) and
+          "rtl_charrev.jpg" not in names(database.search_documents("نفيه")),
+          "char-reversal must destroy recall, proving why the guard exists")
+    st = client.get("/status").json()
+    check("/status no longer claims the engine reverses text",
+          "reverse order" not in st["feedback"] and "verbatim" in st["feedback"], st["feedback"][:80])
+
     print("\n=== legacy rows: old marker-based pages still resolve ===")
     database.insert_document("legacy.pdf", "application/pdf",
                              "--- صفحة 7 ---\nسطر قديم يذكر الارشيف هنا", "h-legacy")

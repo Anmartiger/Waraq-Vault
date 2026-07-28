@@ -164,7 +164,11 @@ async def system_status():
         "ingestion_pipeline": f"Online — OCR device: {ocr_engine.OCR_DEVICE}",
         "search_engine": "Online - SQLite FTS5 index is active and receiving data.",
         "gpu": ocr_engine.GPU_AVAILABLE,
-        "feedback": "OCR extracts RTL Arabic text in reverse order. DO NOT FIX IT. Tokens are valid for indexing."
+        "feedback": (
+            "OCR text is stored verbatim. Never reverse characters or re-sort boxes: "
+            "indexing and querying use identical normalisation, so token order does not "
+            "affect matching, while reversing characters makes a document unfindable."
+        )
     }
 
 @app.get("/search")

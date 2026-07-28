@@ -323,9 +323,16 @@ single-page runs vary by ~20% and English text is not representative.
 
 ### Ground rules
 
-- **Do not "fix" the reversed RTL output.** EasyOCR returns Arabic tokens in reverse visual
-  order; the index and the query are normalised identically, so search works. `/status` says
-  so explicitly. Changing it silently breaks matching.
+- **Store OCR text verbatim &mdash; never reverse characters.** Measured on real scans in this
+  archive, EasyOCR returns Arabic in correct order (`وتم نفيه باتجاه مراكش`), so there is
+  nothing to "fix". Reversing characters makes a document **permanently unfindable**: the
+  normalised tokens no longer match anything. Word/box *order*, by contrast, is irrelevant to
+  search &mdash; `_fts_match_expr` joins tokens with `AND`, not phrase proximity, so a document
+  matches whichever order its words appear in. Re-ordering therefore buys nothing for recall
+  and only risks display changes.
+  > If a test render looks reversed, suspect the render before the engine: text inserted
+  > without Arabic shaping produces disconnected glyphs that OCR reads backwards at low
+  > confidence. That artefact is almost certainly where the old "reverse order" warning came from.
 - **Keep the OCR contracts.** Both take a path, bytes, or a numpy array. `run_ocr_boxes`
   returns `[(bbox, text, confidence)]` and is what the pipeline uses; `run_ocr` returns a plain
   list of strings and is kept for anything that only wants text. `join_ocr()` accepts *either*

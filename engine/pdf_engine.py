@@ -7,6 +7,11 @@ from engine.textflow import smart_join
 # عتبة التمييز: صفحة نصّها أقل من هذا العدد من الحروف تُعتبر مصورة وتحتاج OCR
 TEXT_LAYER_THRESHOLD = 20
 
+# حدّ أمان المعالج: أقصى عدد صفحات تُرسَل إلى محرك OCR داخل استدعاء واحد.
+# يُرفع ValueError عند تجاوزه إلا إذا مرّر المستخدم تأكيداً صريحاً (confirmed=True)
+# أو حدّد صفحات بعينها — وفي الحالتين يُمرَّر None لإلغاء القيد.
+_MAX_OCR_PAGES = 5
+
 def pdf_precheck(pdf_bytes: bytes) -> dict:
     """
     فحص سريع بلا أي OCR: كم صفحة في الملف، وأيها مصوَّر (بلا طبقة نصية).
@@ -51,21 +56,24 @@ def parse_page_selection(spec: str, total_pages: int) -> list:
     return sorted(pages)
 
 def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages: list = None,
-                       progress=None, is_cancelled=None):
+                       progress=None, is_cancelled=None, max_ocr_pages: int | None = _MAX_OCR_PAGES):
     """
     يستقبل ملف PDF كبايتات في الذاكرة ويعيد (النص، خريطة الصفحات).
 
-    - لا يُحقَن أي فاصل وهمي في النص: أرقام الصفحات تعيش في خريطة منفصلة
+    - لا يُحطة منفصلة
       [[أول_سطر, رقم_الصفحة], ...] حتى يبقى فهرس البحث نظيفاً.
     - pages: معالجة صفحات بعينها فقط (اختيار المستخدم من نافذة التأكيد)،
       مع الحفاظ على أرقام الصفحات الحقيقية في الخريطة.
     - نصوص OCR تُدمَج دمجاً ذكياً (فقرات مترابطة) بدل التمزيق الأعمى.
     - progress(done, total, label): حدث تقدم حقيقي بعد كل صفحة.
     - is_cancelled(): تُفحص قبل كل صفحة — الإلغاء يوقف العمل عند أقرب نقطة آمنة.
+    - max_ocr_pages: أقصى عدد صفحات تُعالَج بـ OCR (None = بلا حد). التجاوز يرفع
+      ValueError فوراً لحماية الخادم من استنزاف الموارد.
     """
     lines = []
     page_map = []
     doc = None
+    ocr_pages_done = 0
 
     try:
         # 1. القراءة في الذاكرة العشوائية: لا مساس بالقرص الصلب
@@ -88,6 +96,13 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
 
             # 3. عتبة التمييز — و force_ocr يتجاوزها لمعالجة الملفات الهجينة
             if force_ocr or len(page_text) < TEXT_LAYER_THRESHOLD:
+                # فحص حد الصفحات المصورة — صمام أمان المعالج قبل أي عمل ثقيل
+                if max_ocr_pages is not None and ocr_pages_done >= max_ocr_pages:
+                    raise ValueError(
+                        f"Maximum allowed OCR pages ({max_ocr_pages}) exceeded. "
+                        f"Please split the file."
+                    )
+
                 # تكبير الدقة (Matrix 2x2) لتوضيح الحروف لمحرك EasyOCR
                 zoom = fitz.Matrix(2, 2)
                 pix = page.get_pixmap(matrix=zoom)
@@ -98,6 +113,7 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
 
                 # دمج ذكي: مربعات القراءة تتحول لفقرات متصلة قابلة للبحث
                 page_text = smart_join(ocr_fn(img_array))
+                ocr_pages_done += 1
 
                 # التدمير الإجباري للمتغيرات الضخمة لمنع اختناق الذاكرة
                 del pix

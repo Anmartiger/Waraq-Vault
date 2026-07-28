@@ -58,8 +58,9 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
   at runtime fall back to CPU automatically &mdash; never a crash.
 - **Live search** &mdash; results update as you type (300&nbsp;ms debounce, minimum 2 characters).
 - **Every match, not just one** &mdash; each document lists *all* of its matching lines, not a single snippet.
-- **Honest locations** &mdash; PDF/TXT hits are labelled `p.12 / L340`, Word hits show real
-  page (`p.12`), and image hits show clean OCR text &mdash; no invented positions anywhere.
+- **Honest locations** &mdash; PDF and Word hits are labelled by **page** (`p.12`), text files by
+  **line** (`L340`), and image hits carry no position at all. Nothing is ever invented: a number
+  only appears where you can actually go and find it.
 - **Arabic that actually matches** &mdash; searching `تخطيطا` also finds `وتخطيطا` / `بالتخطيط`
   (attached conjunctions, prepositions and the definite article), while short words like
   `في` and `مع` match only as whole words &mdash; no more highlights inside unrelated words.
@@ -68,9 +69,12 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
   it restores full-archive search.
 - **Delete from the archive** &mdash; remove a document (with confirmation); its search-index
   entries go with it, no orphaned rows.
-- **Large scans ask first** &mdash; a PDF needing OCR on more than 10 pages opens a confirmation
-  with a time estimate for *your* hardware, and lets you process **only the pages you name**
-  (`1-10, 15, 22-30`) instead of the whole book.
+- **No page limit &mdash; but large scans ask first.** A PDF of any length is accepted. Past 5 scanned
+  pages a dialog shows a time estimate for *your* hardware and offers three choices: all pages, a
+  **page range**, or **specific pages** &mdash; with the estimate updating live as you narrow it down.
+  Nothing is ever refused for being too big.
+- **Open the original** &mdash; every indexed document keeps a local copy, openable straight from the
+  file manager, the details panel, or any search result.
 - **Duplicate detection** &mdash; re-uploading a known file prompts you to *overwrite* or *cancel*,
   before any processing starts; renamed copies are caught by content hash.
 - **Force OCR** &mdash; a toggle for hybrid PDFs (text + embedded scans) that processes every page
@@ -175,7 +179,8 @@ The UI is a thin client over four local endpoints.
 | `GET` | `/status` | Health + the active OCR device (GPU name, or CPU with thread count) |
 | `GET` | `/search?q=…` | Search; needs ≥ 2 characters. Optional `doc_id` / `workspace` narrow the scope |
 | `GET` | `/documents` | List indexed documents (feeds the file manager); optional `workspace` |
-| `DELETE` | `/documents/{id}` | Delete one document; the FTS index entry goes with it |
+| `GET` | `/documents/{id}/open` | Stream the stored original (inline, so PDFs/images render) |
+| `DELETE` | `/documents/{id}` | Delete one document; its FTS entry and stored copy go with it |
 | `POST` | `/documents/delete` | Bulk delete — JSON body `{ "ids": [1,2,3] }` |
 | `GET` | `/workspaces` | List workspaces with their document counts |
 | `DELETE` | `/workspaces/{name}` | Delete a whole workspace and every document in it |
@@ -243,6 +248,7 @@ or `"filename"` when the name matches but the contents changed.
 | [`engine/text_engine.py`](engine/text_engine.py) | Plain-text decoding with Arabic encoding fallbacks |
 | [`engine/ocr_engine.py`](engine/ocr_engine.py) | GPU-detecting EasyOCR reader with CPU fallback (Arabic + English) |
 | [`engine/jobs.py`](engine/jobs.py) | The background job queue: progress events, cancellation, per-item status |
+| [`engine/storage.py`](engine/storage.py) | Local copies of uploaded originals, keyed by hash, pruned when unreferenced |
 | [`engine/textflow.py`](engine/textflow.py) | Smart OCR line merging and page-map lookup, shared by all engines |
 | [`ui/index.html`](ui/index.html) | The app shell markup, rendered through Jinja2 |
 | [`ui/css/`](ui/css) | `base.css` (dark + light tokens, app grid) and `components.css` (panels, cards, dialogs) |
@@ -287,6 +293,7 @@ execution strategy is a local change, not a refactor:
 | [`engine/ocr_engine.py`](engine/ocr_engine.py) | `run_ocr_boxes(image)` &mdash; what every caller uses, returns `[(bbox, text, confidence)]`. `run_ocr(image)` keeps the older list-of-strings contract. Device detection, thread pinning and the CUDA-OOM fallback live here |
 | [`engine/pdf_engine.py`](engine/pdf_engine.py) | Page rasterisation: `fitz.Matrix(2, 2)` (the render zoom) and `TEXT_LAYER_THRESHOLD = 20` (when a page counts as scanned). `page_paragraphs()` reads the text layer as real blocks via `get_text("dict")` |
 | [`engine/jobs.py`](engine/jobs.py) | `ThreadPoolExecutor(max_workers=1)` &mdash; the deliberate serialisation. Page-level parallelism starts here |
+| [`engine/storage.py`](engine/storage.py) | Local copies of uploaded originals, keyed by hash, pruned when unreferenced |
 | [`engine/textflow.py`](engine/textflow.py) | `join_ocr()` / `join_boxes()` &mdash; paragraphs built from box **geometry**; `smart_join()` is the punctuation fallback for engines that return no coordinates |
 
 Check what hardware you actually got: `curl 127.0.0.1:8000/status`, or watch the startup
@@ -352,8 +359,14 @@ single-page runs vary by ~20% and English text is not representative.
 ## Privacy
 
 Documents are read, indexed and searched entirely on your machine. Extracted text lives in the local
-`waraq.db`; the original files are never copied, moved, or transmitted. The only network access the
-project ever needs is the one-time OCR model download during setup.
+`waraq.db`, and a **copy of each uploaded original is kept in `storage/`** so you can open it again
+from the app — both are git-ignored and never leave your computer. Your original file, wherever you
+keep it, is never moved or altered. The only network access the project ever needs is the one-time
+OCR model download during setup.
+
+> Deleting a document also deletes its stored copy. If you would rather not keep copies at all,
+> delete the `storage/` folder &mdash; search keeps working, and the *Open original* button simply
+> reports that no copy exists.
 
 ## Status &amp; roadmap
 
@@ -372,7 +385,7 @@ project ever needs is the one-time OCR model download during setup.
 - [x] Dark / light themes and a full file-manager UI
 - [x] Workspaces, bulk deletion, and page-range selection for large scans
 - [x] Clean search index — no injected page markers, smart OCR paragraph merging
-- [ ] Open or reveal the original file from a result
+- [x] Open the original file from a result or the file manager
 
 ## Team
 

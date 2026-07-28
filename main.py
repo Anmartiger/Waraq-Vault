@@ -1,11 +1,11 @@
 from fastapi import FastAPI, Request, UploadFile, File, Form, Query, Body, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from engine import ocr_engine
 from engine import jobs
 from engine.jobs import JobCancelled
-from engine.pdf_engine import process_hybrid_pdf, pdf_precheck, parse_page_selection, _MAX_OCR_PAGES
+from engine.pdf_engine import process_hybrid_pdf, pdf_precheck, parse_page_selection
 from engine.docx_engine import process_docx
 from engine.text_engine import process_txt
 from engine.textflow import join_ocr
@@ -13,7 +13,9 @@ from engine.database import (
     init_db, insert_document, search_documents, find_duplicate,
     delete_documents, list_documents, delete_document_by_id,
     delete_documents_by_ids, list_workspaces, delete_workspace,
+    get_document, referenced_stored_names,
 )
+from engine import storage
 from contextlib import asynccontextmanager
 from typing import Annotated
 import uvicorn
@@ -22,6 +24,7 @@ import os
 import re
 import zipfile
 import hashlib
+from urllib.parse import quote
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,7 +60,7 @@ _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 # أما الصور (OCR ثقيل) فتبقى محدودة، و Force OCR يعيد التقييد الصارم.
 _MAX_BATCH = 50            # الحد الأقصى للملفات النصية/PDF في الرفعة الواحدة
 _MAX_IMAGES_PER_BATCH = 5  # الحد الأقصى للصور في الرفعة الواحدة
-_CONFIRM_SCANNED_PAGES = 10   # فوق هذا العدد من الصفحات المصورة نطلب تأكيد المستخدم
+_CONFIRM_SCANNED_PAGES = 5    # فوق هذا العدد نسأل المستخدم (ولا نرفض أبداً)
 _EST_SEC_PER_PAGE_GPU = 1.5   # تقدير تقريبي لزمن OCR للصفحة الواحدة
 _EST_SEC_PER_PAGE_CPU = 15.0
 
@@ -186,6 +189,30 @@ async def documents(workspace: str | None = None):
     docs = list_documents(workspace=workspace)
     return {"count": len(docs), "documents": docs}
 
+@app.get("/documents/{doc_id}/open")
+async def open_document(doc_id: int):
+    """
+    فتح الملف الأصلي كما رُفع. النسخة محفوظة محلياً في مجلد storage/،
+    وتُقدَّم inline ليعرضها المتصفح مباشرة (PDF وصور) بدل تنزيلها.
+    """
+    doc = get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="المستند غير موجود.")
+    path = storage.path_for(doc["stored_name"])
+    if path is None:
+        raise HTTPException(
+            status_code=404,
+            detail="لا توجد نسخة محفوظة من هذا الملف — رُفع قبل تفعيل ميزة الفتح. "
+                   "أعد رفعه ليصبح قابلاً للفتح."
+        )
+    # ترميز RFC 5987 ليصمد اسم الملف العربي في ترويسة HTTP
+    disposition = f"inline; filename*=UTF-8''{quote(doc['filename'] or 'document')}"
+    return FileResponse(
+        path,
+        media_type=doc["content_type"] or "application/octet-stream",
+        headers={"Content-Disposition": disposition},
+    )
+
 @app.get("/workspaces")
 async def workspaces():
     """مساحات العمل (المجموعات) وعدد مستندات كل واحدة."""
@@ -198,6 +225,7 @@ async def remove_workspace(name: str):
     deleted = delete_workspace(name)
     if deleted == 0:
         raise HTTPException(status_code=404, detail="لا توجد مجموعة بهذا الاسم.")
+    storage.prune(referenced_stored_names())
     return {"deleted": deleted, "workspace": name}
 
 @app.delete("/documents/{doc_id}")
@@ -206,12 +234,14 @@ async def delete_document(doc_id: int):
     deleted = delete_document_by_id(doc_id)
     if deleted == 0:
         raise HTTPException(status_code=404, detail="المستند غير موجود — ربما حُذف مسبقاً.")
+    storage.prune(referenced_stored_names())
     return {"deleted": deleted, "id": doc_id}
 
 @app.post("/documents/delete")
 async def delete_documents_bulk(ids: Annotated[list[int], Body(embed=True)]):
     """الحذف الجماعي للملفات المحددة في مدير الملفات."""
     deleted = delete_documents_by_ids(ids)
+    storage.prune(referenced_stored_names())
     return {"deleted": deleted}
 
 @app.get("/jobs/{job_id}")
@@ -294,8 +324,17 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
                 # الصور تُمرَّر كبايتات مباشرة، والدمج الذكي يبني فقرات مترابطة
                 extracted_text = join_ocr(ocr_engine.run_ocr_boxes(item["bytes"]))
 
+            # نحفظ نسخة من الملف الأصلي ليُفتح لاحقاً من الواجهة؛ فشل الحفظ
+            # لا يُسقط الفهرسة — يبقى المستند قابلاً للبحث وغير قابل للفتح فقط
+            stored_name = None
+            try:
+                stored_name = storage.save(item["bytes"], item["hash"], name)
+            except Exception as e:
+                print(f"WARNING: could not store a copy of {name}: {e}")
+
             insert_document(name, item["stored_type"], extracted_text, item["hash"],
-                            workspace=item["workspace"], page_map=page_map)
+                            workspace=item["workspace"], page_map=page_map,
+                            stored_name=stored_name)
             jobs.set_item(job_id, idx, "indexed")
             indexed.append(name)
 
@@ -369,7 +408,11 @@ async def upload_document(
             "bytes": data,
             "hash": hashlib.sha256(data).hexdigest(),
             "kind": kind,
-            "stored_type": f.content_type or _FALLBACK_TYPES[kind],
+            # المتصفح يرسل octet-stream للملفات بلا امتداد؛ نحن كشفنا النوع الحقيقي
+            # من المحتوى فنخزّنه بدل الترويسة العامة (يصحّح الوسام ووحدة الترقيم معاً)
+            "stored_type": (f.content_type
+                            if f.content_type and f.content_type != "application/octet-stream"
+                            else _FALLBACK_TYPES[kind]),
             "force_ocr": force_ocr,
             "workspace": workspace,
             "skip": False,
@@ -436,24 +479,8 @@ async def upload_document(
             "page_selection_allowed": len(prepared) == 1 and prepared[0]["kind"] == "pdf",
         })
 
-    # 4b. رفض فوري للملفات التي تتجاوز حدّ الصفحات المصوَّرة (5 صفحات) قبل الدخول
-    # إلى طابور المعالجة — توفير للموارد ومنع معالجة أول 5 صفحات ثم الانهيار.
-    _bypass_ocr_limit = confirmed or bool(pages)
-    if not _bypass_ocr_limit:
-        for p in pdf_items:
-            scanned = p.get("scanned_count", 0)
-            if scanned > _MAX_OCR_PAGES:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"الملف {p['name']} يحتوي على {scanned} صفحات مصورة تتجاوز الحد المسموح "
-                           f"({_MAX_OCR_PAGES}). يرجى تقسيم الملف وإعادة المحاولة."
-                )
-
-    # 4c. ضبط صمام أمان OCR داخل المعالج: متى نطلق العنان ومتى نبقي الحد الافتراضي (5 صفحات).
-    # التأكيد الصريح (confirmed=True) أو تحديد صفحات بعينها يعني ثقة المستخدم — نرفع القيد.
-    if _bypass_ocr_limit:
-        for p in prepared:
-            p["max_ocr_pages"] = None
+    # لا رفض بعد اليوم مهما بلغ عدد الصفحات: الحماية هي الموافقة الصريحة أعلاه
+    # (مع التقدير الزمني واختيار الصفحات) والطابور الخلفي القابل للإلغاء.
 
     # 5. فحص التكرار يسبق المعالجة حتى لا ينتظر المستخدم OCR بلا فائدة
     for p in prepared:

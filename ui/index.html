@@ -131,10 +131,12 @@ try { document.documentElement.dataset.theme = localStorage.getItem("waraq-theme
   <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-title" id="modal-title">Confirm</div>
     <div class="modal-text" id="modal-text"></div>
+    <div class="modal-choices" id="modal-choices" hidden></div>
     <div class="modal-input-row" id="modal-input-row" hidden>
       <label for="modal-input" id="modal-input-label"></label>
       <input id="modal-input" dir="ltr" autocomplete="off" spellcheck="false">
     </div>
+    <div class="modal-estimate" id="modal-estimate"></div>
     <div class="modal-actions">
       <button type="button" class="btn ghost" id="modal-cancel">Cancel</button>
       <button type="button" class="btn danger" id="modal-ok">Confirm</button>

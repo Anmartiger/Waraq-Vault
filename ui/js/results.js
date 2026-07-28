@@ -70,6 +70,9 @@ function cardHtml(r) {
         (r.workspace && r.workspace !== "Default"
           ? '<span class="wsbadge">' + escapeHtml(r.workspace) + "</span>" : "") +
         '<span class="hits">' + total + " match" + (total === 1 ? "" : "es") + "</span>" +
+        (r.openable && r.id != null
+          ? '<button type="button" class="openlink" data-open="' + r.id + '" ' +
+            'title="Open the original file">Open ↗</button>' : "") +
       "</div>" +
       body +
     "</div>"
@@ -97,6 +100,12 @@ export function renderResults(list, q) {
 // Show more / Show less — reveal matching lines BATCH at a time.
 export function initShowMore() {
   resultsEl.addEventListener("click", function (e) {
+    // Opening the original from a result card.
+    var open = e.target.closest && e.target.closest("[data-open]");
+    if (open) {
+      window.open("/documents/" + open.getAttribute("data-open") + "/open", "_blank", "noopener");
+      return;
+    }
     var btn = e.target.closest && e.target.closest(".showmore");
     if (!btn) return;
     var lines = btn.previousElementSibling;

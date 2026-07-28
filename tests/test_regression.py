@@ -7,6 +7,7 @@ strict short-token matching, language detection and per-format units.
 Run:  .venv/Scripts/python.exe tests/test_regression.py   (needs: pip install httpx)
 The real waraq.db is never touched."""
 import sys, os, io, types, time, tempfile, sqlite3, zipfile
+from urllib.parse import unquote
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -39,6 +40,13 @@ from engine import database
 TMPDB = Path(tempfile.gettempdir()) / "waraq_test_problems.db"
 if TMPDB.exists(): TMPDB.unlink()
 database.DB_PATH = TMPDB
+
+# Stored originals go to a throwaway folder — never the project's real storage/
+from engine import storage as _storage
+import shutil as _shutil
+TMPSTORE = Path(tempfile.gettempdir()) / "waraq_test_storage"
+if TMPSTORE.exists(): _shutil.rmtree(TMPSTORE, ignore_errors=True)
+_storage.STORAGE_DIR = TMPSTORE
 
 import main
 from fastapi.testclient import TestClient
@@ -459,6 +467,59 @@ with client:
     check("style lookup failure falls back to word count",
           _is_heading(_FakePara(), "two words") is True and _is_heading(_FakePara(), "this has four words") is False)
 
+    print("\n=== G5: PDF positions are page-only; TXT keeps real lines ===")
+    s = client.get("/search", params={"q": "stub"}).json()
+    pdfhit = next((x for x in s["results"] if x["filename"].endswith(".pdf")), None)
+    check("pdf unit is page (no L numbers)", pdfhit and pdfhit["unit"] == "page", pdfhit and pdfhit["unit"])
+    check("pdf still carries real page numbers",
+          pdfhit and any(m.get("page") for m in pdfhit["matches"]), str(pdfhit and pdfhit["matches"][:1]))
+    s2 = client.get("/search", params={"q": "الضغط"}).json()
+    txthit = next((x for x in s2["results"] if x["filename"] == "هندسة_AI"), None)
+    check("txt keeps line numbering", txthit and txthit["unit"] == "line", txthit and txthit["unit"])
+
+    print("\n=== G6: no page cap — a big scan proceeds once confirmed ===")
+    from engine.pdf_engine import _MAX_OCR_PAGES as CAP
+    check("engine ships with no hard page limit", CAP is None, repr(CAP))
+    r = upload(client, [("big25.pdf", blank_pdf(25), "application/pdf")])
+    check("25 scanned pages -> 413 (asks, does not refuse)", r.status_code == 413, r.text[:120])
+    r = upload(client, [("big25.pdf", blank_pdf(25), "application/pdf")], confirmed=True)
+    check("confirmed -> accepted, no 'maximum pages' error", r.status_code == 202, r.text[:160])
+    j = wait_job(client, r.json()["job_id"], timeout=90)
+    check("all 25 pages processed", j["state"] == "done" and j["total_units"] == 25,
+          f"{j['state']} units={j.get('total_units')}")
+
+    print("\n=== G7: originals are stored and can be opened ===")
+    r = upload(client, [("openable.txt", "محتوى الملف الأصلي للفتح".encode("utf-8"), "text/plain")])
+    wait_job(client, r.json()["job_id"])
+    docs = client.get("/documents").json()["documents"]
+    doc = next(d for d in docs if d["filename"] == "openable.txt")
+    check("document is flagged openable", doc.get("openable") == 1 or doc.get("openable") is True, str(doc.get("openable")))
+    r = client.get(f"/documents/{doc['id']}/open")
+    check("open returns the original bytes", r.status_code == 200 and "الأصلي" in r.content.decode("utf-8"), r.status_code)
+    check("served inline with the real filename",
+          "inline" in r.headers.get("content-disposition", "") and
+          "openable.txt" in unquote(r.headers.get("content-disposition", "")),
+          r.headers.get("content-disposition"))
+    check("search results expose openable too",
+          any(x.get("openable") for x in client.get("/search", params={"q": "الأصلي"}).json()["results"]))
+    check("unknown document -> 404", client.get("/documents/999999/open").status_code == 404)
+
+    print("\n=== G7b: deleting a document removes its stored copy ===")
+    from engine import storage
+    stored = sorted(p.name for p in storage.STORAGE_DIR.iterdir()) if storage.STORAGE_DIR.exists() else []
+    check("a copy exists on disk before deletion", len(stored) > 0, str(len(stored)))
+    client.delete(f"/documents/{doc['id']}")
+    left = sorted(p.name for p in storage.STORAGE_DIR.iterdir()) if storage.STORAGE_DIR.exists() else []
+    check("orphaned copy pruned after delete", len(left) == len(stored) - 1, f"{len(stored)} -> {len(left)}")
+    check("opening a deleted document -> 404", client.get(f"/documents/{doc['id']}/open").status_code == 404)
+    # A row indexed before this feature existed has no stored copy at all.
+    database.insert_document("legacy_nofile.txt", "text/plain", "نص قديم بلا نسخة محفوظة", "h-legacyfile")
+    legacy = next(d for d in client.get("/documents").json()["documents"]
+                  if d["filename"] == "legacy_nofile.txt")
+    check("legacy row reports not openable", not legacy.get("openable"), str(legacy.get("openable")))
+    check("opening a legacy row -> 404 with guidance",
+          client.get(f"/documents/{legacy['id']}/open").status_code == 404)
+
     print("\n=== G4: the RTL storage policy, locked in ===")
     # Real text as EasyOCR actually stored it for an Arabic scan in this project.
     REAL = "وتم نفيه باتجاه مراكش تحت حراسة مشددة"
@@ -491,5 +552,6 @@ with client:
 print(f"\n{'='*60}\nPASSED: {PASS}   FAILED: {len(FAIL)}")
 for f in FAIL: print("  ✗", f)
 if TMPDB.exists(): TMPDB.unlink()
-print("temp DB removed; real waraq.db untouched")
+_shutil.rmtree(TMPSTORE, ignore_errors=True)
+print("temp DB + temp storage removed; real waraq.db untouched")
 sys.exit(1 if FAIL else 0)

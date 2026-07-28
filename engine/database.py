@@ -37,6 +37,7 @@ def init_db():
             file_hash TEXT,
             workspace TEXT NOT NULL DEFAULT 'Default',
             page_map TEXT,
+            stored_name TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         
@@ -76,12 +77,16 @@ def init_db():
         con.execute("ALTER TABLE documents ADD COLUMN page_map TEXT")
         con.commit()
         print("ℹ️ Added page_map column to the existing documents table.")
+    if "stored_name" not in existing_columns:
+        con.execute("ALTER TABLE documents ADD COLUMN stored_name TEXT")
+        con.commit()
+        print("ℹ️ Added stored_name column — new uploads keep an openable copy.")
 
     con.close()
     print("✅ Database and FTS5 Schema initialized successfully.")
 
 def insert_document(filename: str, content_type: str, raw_text: str, file_hash: str = None,
-                    workspace: str = "Default", page_map: list = None):
+                    workspace: str = "Default", page_map: list = None, stored_name: str = None):
     """إدخال مستند جديد إلى قاعدة البيانات.
     page_map: خريطة الصفحات [[أول_سطر, رقم_الصفحة], ...] — تُخزَّن خارج النص
     حتى لا تلوّث فهرس البحث بفواصل وهمية."""
@@ -89,10 +94,10 @@ def insert_document(filename: str, content_type: str, raw_text: str, file_hash: 
     try:
         norm_text = normalize(raw_text)
         con.execute(
-            "INSERT INTO documents (filename, content_type, raw_text, normalized_text, file_hash, workspace, page_map)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO documents (filename, content_type, raw_text, normalized_text, file_hash,"
+            " workspace, page_map, stored_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (filename, content_type, raw_text, norm_text, file_hash,
-             workspace or "Default", json.dumps(page_map) if page_map else None)
+             workspace or "Default", json.dumps(page_map) if page_map else None, stored_name)
         )
         con.commit()
     finally:
@@ -295,14 +300,15 @@ def _unit_for(content_type: str) -> str:
     """
     وحدة الترقيم الصادقة لكل نوع ملف:
     - الصور: كتل OCR لا "أسطر" حقيقية ← بلا أي رقم موضع (block)
-    - DOCX: رقم الفقرة لا يعني شيئاً للقارئ ← الصفحة وحدها تكفي (page)
-    - PDF/TXT: أسطر فعلية ← تُعرض L (line)
+    - PDF و DOCX: الصفحة هي الموضع الذي يجده القارئ فعلاً في الملف الأصلي (page)
+    - TXT: أسطر حقيقية في ملف نصي ← تُعرض L (line)
     """
     ct = (content_type or "").lower()
     if ct.startswith("image/"):
         return "block"
-    if "wordprocessingml" in ct or ct == "application/msword":
+    if "pdf" in ct or "wordprocessingml" in ct or ct == "application/msword":
         return "page"
+    # كل ما عداه نص: السطر هو الموضع الصادق الوحيد المتاح
     return "line"
 
 def search_documents(query: str, limit: int = 20, doc_ids: list = None, workspace: str = None) -> list:
@@ -319,6 +325,7 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None, workspac
 
     sql = """
         SELECT d.id, d.filename, d.content_type, d.raw_text, d.workspace, d.page_map,
+               (d.stored_name IS NOT NULL) AS openable,
                snippet(documents_fts, 0, '<b>', '</b>', '...', 15) as snippet,
                bm25(documents_fts) AS rank
         FROM documents_fts
@@ -356,6 +363,7 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None, workspac
                 "match_count": total,
                 "lang": _detect_lang(row["raw_text"]),
                 "unit": _unit_for(row["content_type"]),
+                "openable": bool(row["openable"]),
             })
         return results
     finally:
@@ -367,7 +375,8 @@ def list_documents(workspace: str = None) -> list:
     con.row_factory = sqlite3.Row
     try:
         sql = """
-            SELECT id, filename, content_type, workspace, created_at, length(raw_text) AS chars
+            SELECT id, filename, content_type, workspace, created_at, length(raw_text) AS chars,
+                   (stored_name IS NOT NULL) AS openable
             FROM documents
         """
         params = []
@@ -401,6 +410,31 @@ def delete_documents_by_ids(doc_ids: list) -> int:
         cursor = con.execute(f"DELETE FROM documents WHERE id IN ({placeholders})", ids)
         con.commit()
         return cursor.rowcount
+    finally:
+        con.close()
+
+def get_document(doc_id: int) -> dict:
+    """بيانات مستند واحد (بلا نصه الخام) — يُستخدم لفتح الملف الأصلي."""
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT id, filename, content_type, workspace, created_at, stored_name"
+            " FROM documents WHERE id = ?", (int(doc_id),)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+def referenced_stored_names() -> set:
+    """أسماء النسخ التي ما زال يشير إليها مستند — كل ما عداها يتيم ويُحذف."""
+    con = sqlite3.connect(DB_PATH)
+    try:
+        return {
+            row[0] for row in con.execute(
+                "SELECT DISTINCT stored_name FROM documents WHERE stored_name IS NOT NULL"
+            )
+        }
     finally:
         con.close()
 

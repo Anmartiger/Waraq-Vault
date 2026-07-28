@@ -101,6 +101,9 @@ function renderDocs() {
         '<span class="d-main"><span class="d-name">' + escapeHtml(d.filename) + "</span>" +
           '<span class="d-meta">' + typeLabel(d.content_type) + " · " + fmtChars(d.chars || 0) +
           (state.workspace ? "" : " · " + escapeHtml(d.workspace || "Default")) + "</span></span>" +
+        (d.openable
+          ? '<button type="button" class="d-del d-open" title="Open the original file" data-open="' + d.id + '">↗</button>'
+          : "") +
         '<button type="button" class="d-del" title="Delete this file" data-del="' + d.id + '">🗑</button>' +
       "</div>";
     }).join("");
@@ -128,11 +131,17 @@ function renderDetails() {
         '<div class="det-kv"><span class="k">ID</span><span class="v">#' + doc.id + "</span></div>" +
       "</div>" +
       '<div class="det-actions">' +
+        (doc.openable
+          ? '<button type="button" class="btn-open" id="det-open">Open original ↗</button>'
+          : '<button type="button" class="btn-open" disabled ' +
+            'title="Uploaded before file-opening existed — re-upload to enable">Open original ↗</button>') +
         '<button type="button" class="btn-del" id="det-delete">Delete file</button>' +
         '<button type="button" class="btn-ghost-mini" id="det-unscope">Clear selection</button>' +
       "</div>" +
       '<div class="det-hint">Search is scoped to this file — clear to search everything.</div>';
     document.getElementById("det-delete").addEventListener("click", function () { deleteOne(doc.id, doc.filename); });
+    var detOpen = document.getElementById("det-open");
+    if (detOpen) detOpen.addEventListener("click", function () { openOriginal(doc.id); });
     document.getElementById("det-unscope").addEventListener("click", function () { setDocScope(null); });
   } else {
     var byType = { pdf: 0, docx: 0, txt: 0, image: 0 };
@@ -154,6 +163,12 @@ function renderDetails() {
 }
 
 function renderAll() { renderWorkspaces(); renderDocs(); renderDetails(); }
+
+// The server streams the stored copy back; the browser renders PDFs and images
+// inline and downloads anything it cannot display.
+function openOriginal(id) {
+  window.open("/documents/" + id + "/open", "_blank", "noopener");
+}
 
 // ---- scope + selection ----------------------------------------------------
 function setDocScope(id) {
@@ -276,6 +291,8 @@ export function initFiles() {
       renderSelBar();
       return;                                   // checkbox click ≠ scope click
     }
+    var open = e.target.closest("[data-open]");
+    if (open) { openOriginal(parseInt(open.getAttribute("data-open"), 10)); return; }
     var del = e.target.closest("[data-del]");
     if (del) {
       var didNum = parseInt(del.getAttribute("data-del"), 10);

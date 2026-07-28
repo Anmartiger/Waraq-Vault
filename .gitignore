@@ -23,3 +23,6 @@ testdocs/
 
 # AI local config
 .clinerules
+
+# stored copies of uploaded originals (rebuildable by re-uploading)
+storage/

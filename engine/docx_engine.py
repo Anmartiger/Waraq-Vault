@@ -75,25 +75,36 @@ def _extract_media_ocr(file_bytes: bytes, ocr_fn, progress=None, is_cancelled=No
     صورة تالفة واحدة لا تُسقط المستند كاملاً — تُتجاهل ويستمر الباقي.
     """
     blocks = []
-    with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
-        media = sorted(
-            n for n in archive.namelist()
-            if n.startswith("word/media/") and os.path.splitext(n)[1].lower() in _MEDIA_EXTS
-        )
-        for index, name in enumerate(media, start=1):
-            if is_cancelled and is_cancelled():
-                raise JobCancelled()
-            if progress:
-                progress(index, len(media), f"embedded image {index}/{len(media)}")
-            try:
-                text = smart_join(ocr_fn(archive.read(name)))
-                if text:
-                    blocks.extend(l for l in text.split("\n") if l.strip())
-            except JobCancelled:
-                raise
-            except Exception:
-                # صورة مشوهة أو صيغة لا يفهمها المحرك — نتجاوزها بصمت مدروس
-                continue
+    # ZipFile لا يغلق الكائن الذي يُمرَّر إليه، لذا نمسك المخزن بأنفسنا ونغلقه صراحةً
+    buffer = io.BytesIO(file_bytes)
+    try:
+        with zipfile.ZipFile(buffer) as archive:
+            media = sorted(
+                n for n in archive.namelist()
+                if n.startswith("word/media/") and os.path.splitext(n)[1].lower() in _MEDIA_EXTS
+            )
+            for index, name in enumerate(media, start=1):
+                if is_cancelled and is_cancelled():
+                    raise JobCancelled()
+                if progress:
+                    progress(index, len(media), f"embedded image {index}/{len(media)}")
+                data = None
+                try:
+                    data = archive.read(name)
+                    text = smart_join(ocr_fn(data))
+                    if text:
+                        blocks.extend(l for l in text.split("\n") if l.strip())
+                except JobCancelled:
+                    raise
+                except Exception:
+                    # صورة مشوهة أو صيغة لا يفهمها المحرك — نتجاوزها بصمت مدروس
+                    continue
+                finally:
+                    # التدمير الفوري لبايتات الصورة: صورة واحدة فقط في الذاكرة
+                    # في أي لحظة مهما بلغ عدد الصور المدمجة في المستند
+                    del data
+    finally:
+        buffer.close()
     return blocks
 
 def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,

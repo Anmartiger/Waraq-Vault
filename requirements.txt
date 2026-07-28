@@ -6,3 +6,8 @@ pymupdf==1.28.0          # Library to extract text from PDF files
 python-docx==1.2.0       # Library to extract text from Word documents (DOCX)
 Jinja2==3.1.6            # Templating engine to render the frontend HTML UI
 simpleitk==2.3.1         # Required by EasyOCR backend to prevent missing ITK errors
+
+# GPU (NVIDIA): the default torch wheel on Windows is CPU-only.
+# For CUDA, reinstall torch from PyTorch's index — see the README:
+#   pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu130
+# RTX 50-series (Blackwell) needs cu128 or newer; cu126 will not run on them.

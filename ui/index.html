@@ -23,6 +23,11 @@ try { document.documentElement.dataset.theme = localStorage.getItem("waraq-theme
       <span class="tag">خزانة أوراقك الخاصة — search your Arabic &amp; English documents</span>
     </div>
     <div class="top-actions">
+      <select id="device-select" class="devsel" title="Processing hardware for OCR">
+        <option value="auto">⚙️ Auto</option>
+        <option value="gpu">⚡ GPU</option>
+        <option value="cpu">🖥 CPU</option>
+      </select>
       <span id="device-chip" class="chip" hidden></span>
       <button type="button" id="details-toggle" class="iconbtn" title="Details panel" aria-label="Toggle details panel">🗂️</button>
       <button type="button" id="theme-toggle" class="iconbtn" title="Light / dark mode" aria-label="Toggle color theme">🌙</button>

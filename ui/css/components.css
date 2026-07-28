@@ -248,6 +248,16 @@ form.search{display:flex;gap:10px;margin:16px 0 4px;}
 .modal-estimate.warn{color:var(--danger);}
 .modal .btn:disabled{opacity:.45;cursor:not-allowed;filter:none;}
 
+/* OCR device selector in the header */
+.devsel{
+  font-size:11.5px;font-weight:700;padding:6px 9px;border-radius:9px;cursor:pointer;outline:none;
+  background:rgba(251,247,239,.08);border:1px solid rgba(240,220,166,.25);color:#F0DCA6;
+  font-family:inherit;max-width:120px;
+}
+.devsel:hover{background:rgba(251,247,239,.16);}
+.devsel option{background:#0E2A30;color:#EADFC6;}
+.chip.warn{background:rgba(217,135,115,.16);border-color:rgba(217,135,115,.45);color:#F0C4B6;cursor:help;}
+
 /* open-original buttons */
 .btn-open{
   font-size:12px;font-weight:700;padding:6px 13px;border-radius:9px;cursor:pointer;white-space:nowrap;

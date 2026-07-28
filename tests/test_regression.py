@@ -34,6 +34,25 @@ fake.run_ocr = _run_ocr
 fake.run_ocr_boxes = _run_ocr
 fake.extract_text_from_image = lambda src: " \n ".join(_run_ocr(src))
 fake.reader = None
+
+# Hardware reporting: a machine that HAS an NVIDIA card which torch cannot use —
+# the exact situation a CPU-only PyTorch build produces.
+fake.device_status = lambda: {
+    "mode": "auto", "active": "cpu", "device": "CPU (stub)", "gpu_usable": False,
+    "gpu_present": True, "gpu_name": "NVIDIA GeForce RTX 5070 Ti", "gpu_memory": "12227 MiB",
+    "driver": "596.36", "torch_version": "2.13.0+cpu", "torch_cuda": None,
+    "reason": "PyTorch build has no CUDA support.",
+    "install_hint": "pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu130",
+    "cpu_threads": 31,
+}
+def _set_device(mode):
+    if mode not in ("auto", "gpu", "cpu"):
+        raise ValueError("الوضع المسموح: auto أو gpu أو cpu")
+    if mode == "gpu":
+        raise ValueError("PyTorch build has no CUDA support.")
+    st = fake.device_status(); st["mode"] = mode; return st
+fake.set_device = _set_device
+
 sys.modules["engine.ocr_engine"] = fake
 
 from engine import database
@@ -519,6 +538,20 @@ with client:
     check("legacy row reports not openable", not legacy.get("openable"), str(legacy.get("openable")))
     check("opening a legacy row -> 404 with guidance",
           client.get(f"/documents/{legacy['id']}/open").status_code == 404)
+
+    print("\n=== G8: OCR device reporting and selection ===")
+    d = client.get("/device").json()
+    check("device endpoint reports the physical GPU", d["gpu_present"] and "5070" in d["gpu_name"], str(d.get("gpu_name")))
+    check("but marks it unusable with a reason", d["gpu_usable"] is False and d["reason"], str(d.get("reason")))
+    check("and hands over an install command", "download.pytorch.org" in d["install_hint"], d.get("install_hint"))
+    check("status embeds the same device block", client.get("/status").json()["device"]["gpu_present"] is True)
+    r = client.post("/device", json={"mode": "cpu"})
+    check("selecting cpu succeeds", r.status_code == 200 and r.json()["mode"] == "cpu", r.text[:120])
+    r = client.post("/device", json={"mode": "gpu"})
+    check("selecting gpu on a CPU-only build -> 400 with the reason",
+          r.status_code == 400 and "CUDA" in r.json()["detail"], r.text[:120])
+    r = client.post("/device", json={"mode": "quantum"})
+    check("an invalid mode -> 400", r.status_code == 400)
 
     print("\n=== G4: the RTL storage policy, locked in ===")
     # Real text as EasyOCR actually stored it for an Arabic scan in this project.

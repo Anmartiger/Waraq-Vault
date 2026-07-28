@@ -3,13 +3,14 @@
 
 import {
   showEmpty, input, filesPanel, detailsPanel, detailsClose, detailsToggle,
-  navFiles, railLibrary, railSearch, railUpload, deviceChip
+  navFiles, railLibrary, railSearch, railUpload
 } from "./dom.js";
 import { initTheme } from "./theme.js";
 import { initSearch } from "./search.js";
 import { initUpload, openPicker } from "./upload.js";
 import { initShowMore } from "./results.js";
 import { initFiles } from "./files.js";
+import { initDevice } from "./device.js";
 
 function initShell() {
   var appEl = document.querySelector(".app");
@@ -39,18 +40,6 @@ function initShell() {
   detailsToggle.addEventListener("click", toggleDetails);
   detailsClose.addEventListener("click", closeDetails);
 
-  // The status chip in the header tells the truth about the OCR device.
-  fetch("/status")
-    .then(function (r) { return r.json(); })
-    .then(function (s) {
-      var line = (s && s.ingestion_pipeline) || "";
-      var device = line.indexOf("OCR device:") > -1 ? line.split("OCR device:")[1].trim() : "";
-      if (device) {
-        deviceChip.textContent = (s.gpu ? "⚡ " : "🖥 ") + device;
-        deviceChip.hidden = false;
-      }
-    })
-    .catch(function () { /* header chip is decorative — search works regardless */ });
 }
 
 initTheme();
@@ -59,5 +48,6 @@ initSearch();
 initUpload();
 initShowMore();
 initFiles();
+initDevice();
 
 showEmpty("Start by searching, or upload documents.");

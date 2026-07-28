@@ -124,6 +124,48 @@ On Linux/macOS use `.venv/bin/python` instead of `.venv/Scripts/python.exe`.
 **The first run needs internet** &mdash; EasyOCR downloads its Arabic/English models (a few hundred
 MB) before the server reports `Uvicorn running`. After that, the app is fully offline.
 
+### Enabling the GPU (NVIDIA)
+
+OCR runs **10–30× faster** on a CUDA GPU, and the app picks one up automatically. The catch is
+PyTorch itself:
+
+> **On Windows, `pip install torch` gives you a CPU-only build.** Even with a healthy NVIDIA card
+> and a current driver, `torch.version.cuda` is `None` and the GPU is never touched. On Linux the
+> default PyPI wheel usually already bundles CUDA.
+
+The app detects this exact situation and says so: the header chip turns into
+**⚠ GPU idle — <your card>** and `/device` returns the reason plus the command to fix it.
+
+```bash
+.venv/Scripts/python.exe -m pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu130
+```
+
+Pick the CUDA build that matches your card &mdash; **RTX 50-series (Blackwell) needs cu128 or newer**;
+`cu126` will install but cannot run on those cards. Check what exists at
+<https://download.pytorch.org/whl/>. On Linux use `.venv/bin/python` and, if the default PyPI
+wheel already reports CUDA, no reinstall is needed at all.
+
+Verify afterwards:
+
+```bash
+.venv/Scripts/python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+You want `True` &mdash; then restart the server and the chip should read **⚡ GPU (…)**.
+
+### Choosing the hardware
+
+The header has an **Auto / GPU / CPU** selector:
+
+| Mode | Behaviour |
+|---|---|
+| **Auto** (default) | GPU when usable, otherwise CPU |
+| **GPU** | forces the GPU; refused with a clear reason if it isn't usable |
+| **CPU** | pins to CPU (`cores − 1` threads) &mdash; useful while gaming or to keep the GPU free |
+
+The choice is remembered between visits, applies immediately (models reload in the background),
+and a GPU that runs out of memory mid-job still falls back to CPU on its own.
+
 ## How it works
 
 ```mermaid
@@ -177,6 +219,8 @@ The UI is a thin client over four local endpoints.
 |---|---|---|
 | `GET` | `/` | Serves the UI |
 | `GET` | `/status` | Health + the active OCR device (GPU name, or CPU with thread count) |
+| `GET` | `/device` | Hardware report: active device, whether a GPU exists, and why it is idle |
+| `POST` | `/device` | Switch hardware — JSON body `{ "mode": "auto" | "gpu" | "cpu" }` |
 | `GET` | `/search?q=…` | Search; needs ≥ 2 characters. Optional `doc_id` / `workspace` narrow the scope |
 | `GET` | `/documents` | List indexed documents (feeds the file manager); optional `workspace` |
 | `GET` | `/documents/{id}/open` | Stream the stored original (inline, so PDFs/images render) |
@@ -248,6 +292,7 @@ or `"filename"` when the name matches but the contents changed.
 | [`engine/text_engine.py`](engine/text_engine.py) | Plain-text decoding with Arabic encoding fallbacks |
 | [`engine/ocr_engine.py`](engine/ocr_engine.py) | GPU-detecting EasyOCR reader with CPU fallback (Arabic + English) |
 | [`engine/jobs.py`](engine/jobs.py) | The background job queue: progress events, cancellation, per-item status |
+| [`ui/js/device.js`](ui/js/device.js) | The hardware selector and the "GPU idle" warning |
 | [`engine/storage.py`](engine/storage.py) | Local copies of uploaded originals, keyed by hash, pruned when unreferenced |
 | [`engine/textflow.py`](engine/textflow.py) | Smart OCR line merging and page-map lookup, shared by all engines |
 | [`ui/index.html`](ui/index.html) | The app shell markup, rendered through Jinja2 |
@@ -293,6 +338,7 @@ execution strategy is a local change, not a refactor:
 | [`engine/ocr_engine.py`](engine/ocr_engine.py) | `run_ocr_boxes(image)` &mdash; what every caller uses, returns `[(bbox, text, confidence)]`. `run_ocr(image)` keeps the older list-of-strings contract. Device detection, thread pinning and the CUDA-OOM fallback live here |
 | [`engine/pdf_engine.py`](engine/pdf_engine.py) | Page rasterisation: `fitz.Matrix(2, 2)` (the render zoom) and `TEXT_LAYER_THRESHOLD = 20` (when a page counts as scanned). `page_paragraphs()` reads the text layer as real blocks via `get_text("dict")` |
 | [`engine/jobs.py`](engine/jobs.py) | `ThreadPoolExecutor(max_workers=1)` &mdash; the deliberate serialisation. Page-level parallelism starts here |
+| [`ui/js/device.js`](ui/js/device.js) | The hardware selector and the "GPU idle" warning |
 | [`engine/storage.py`](engine/storage.py) | Local copies of uploaded originals, keyed by hash, pruned when unreferenced |
 | [`engine/textflow.py`](engine/textflow.py) | `join_ocr()` / `join_boxes()` &mdash; paragraphs built from box **geometry**; `smart_join()` is the punctuation fallback for engines that return no coordinates |
 
@@ -378,7 +424,7 @@ OCR model download during setup.
 - [x] All matching lines per document, with page &amp; line numbers and highlighting
 - [x] Duplicate detection with overwrite / cancel
 - [x] Background job queue with real progress and cancellation
-- [x] GPU auto-detection with safe CPU fallback
+- [x] GPU auto-detection, manual override, and a diagnostic when a card is present but unusable
 - [x] Multi-image upload (up to 5 per batch) with per-image status
 - [x] Manage the library: per-file search scope and deletion
 - [x] Arabic proclitic matching (`تخطيطا` ↔ `وتخطيطا`) and strict short-word search

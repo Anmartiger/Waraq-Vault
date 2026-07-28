@@ -2,7 +2,29 @@ import fitz  # PyMuPDF
 import numpy as np
 
 from engine.jobs import JobCancelled
-from engine.textflow import smart_join
+from engine.textflow import join_ocr
+
+def page_paragraphs(page) -> list:
+    """
+    استخراج الفقرات الحقيقية من طبقة النص باستخدام تحليل التخطيط في PyMuPDF.
+
+    get_text("text") يعيد حساءً من الأسطر بلا بنية، بينما get_text("dict") يعطي
+    كتلاً (blocks) وأسطراً ومقاطع مع إحداثياتها — والكتلة هنا هي الفقرة فعلياً.
+    هذا يلغي التخمين: لا نحتاج إلى استنتاج أين تنتهي الفقرة.
+    """
+    paragraphs = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:      # 0 = نص، غير ذلك صور
+            continue
+        line_texts = []
+        for line in block.get("lines", []):
+            text = "".join(span.get("text", "") for span in line.get("spans", [])).strip()
+            if text:
+                line_texts.append(text)
+        if line_texts:
+            # أسطر الكتلة الواحدة تُدمج في فقرة واحدة قابلة للبحث
+            paragraphs.append(" ".join(line_texts))
+    return paragraphs
 
 # عتبة التمييز: صفحة نصّها أقل من هذا العدد من الحروف تُعتبر مصورة وتحتاج OCR
 TEXT_LAYER_THRESHOLD = 20
@@ -111,15 +133,16 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
                 if pix.n == 4:
                     img_array = img_array[:, :, :3]
 
-                # دمج ذكي: مربعات القراءة تتحول لفقرات متصلة قابلة للبحث
-                page_text = smart_join(ocr_fn(img_array))
+                # تجميع هندسي: إحداثيات الصناديق تبني الأسطر والفقرات بدقة
+                page_lines = [l for l in join_ocr(ocr_fn(img_array)).split("\n") if l.strip()]
                 ocr_pages_done += 1
 
                 # التدمير الإجباري للمتغيرات الضخمة لمنع اختناق الذاكرة
                 del pix
                 del img_array
-
-            page_lines = [l for l in page_text.split("\n") if l.strip()]
+            else:
+                # طبقة نصية موجودة: نأخذ الفقرات من تحليل التخطيط مباشرة
+                page_lines = page_paragraphs(page)
             if page_lines:
                 page_map.append([len(lines) + 1, real_page_no])
                 lines.extend(page_lines)

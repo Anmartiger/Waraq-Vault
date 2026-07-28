@@ -28,6 +28,9 @@ def _run_ocr(image):
     if fake.DELAY: time.sleep(fake.DELAY)
     return ["سطر عربي من OCR", "stub ocr line"]
 fake.run_ocr = _run_ocr
+# Geometry-aware entry point. Returning plain strings on purpose: it proves the
+# bbox path degrades gracefully to punctuation joining when no coordinates exist.
+fake.run_ocr_boxes = _run_ocr
 fake.extract_text_from_image = lambda src: " \n ".join(_run_ocr(src))
 fake.reader = None
 sys.modules["engine.ocr_engine"] = fake
@@ -390,6 +393,71 @@ with client:
     joined = smart_join(["النص الأول يستمر", "حتى نهاية الجملة هنا.", "جملة جديدة تبدأ", "وتنتهي أيضا؟", "بقايا بلا نهاية"])
     check("terminal punctuation closes paragraphs",
           joined == "النص الأول يستمر حتى نهاية الجملة هنا.\nجملة جديدة تبدأ وتنتهي أيضا؟\nبقايا بلا نهاية", joined)
+
+    print("\n=== G1: OCR paragraphs come from box geometry, not punctuation ===")
+    from engine.textflow import join_boxes, join_ocr
+    def bx(x0, y0, x1, y1, t):
+        return ([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], t, 0.9)
+    # two boxes on one visual line, then a far-below line = a second paragraph
+    boxes = [bx(10, 10, 90, 30, "السطر الأول"), bx(95, 12, 180, 32, "يكمل هنا"),
+             bx(10, 40, 120, 60, "سطر ثانٍ في نفس الفقرة"),
+             bx(10, 140, 120, 160, "فقرة جديدة بعيدة")]
+    out = join_boxes(boxes)
+    check("boxes sharing a line are merged", out.splitlines()[0] == "السطر الأول يكمل هنا سطر ثانٍ في نفس الفقرة", out.splitlines()[0])
+    check("a large vertical gap starts a new paragraph", len(out.splitlines()) == 2, str(out.splitlines()))
+    check("engine order preserved (no re-sorting, RTL safe)",
+          out.index("السطر الأول") < out.index("يكمل هنا") < out.index("فقرة جديدة"))
+    # no punctuation anywhere: the old heuristic would have produced ONE blob
+    check("geometry beats punctuation on unpunctuated text",
+          len(out.splitlines()) == 2 and len(smart_join([b[1] for b in boxes]).splitlines()) == 1)
+    check("join_ocr still accepts plain strings (fallback intact)",
+          join_ocr(["جملة اولى.", "جملة ثانية"]) == "جملة اولى.\nجملة ثانية")
+    check("join_ocr handles empty input", join_ocr([]) == "" and join_ocr(None) == "")
+
+    print("\n=== G2: PDF text layer yields real paragraph blocks ===")
+    from engine.pdf_engine import page_paragraphs
+    d2 = fitz.open(); pg = d2.new_page()
+    pg.insert_text((60, 80), "Annual Report", fontsize=20)
+    # insert_textbox flows and wraps the text, like a real document paragraph
+    pg.insert_textbox(fitz.Rect(60, 110, 330, 230),
+                      "The archive contains records of every project we ran during the last "
+                      "fiscal year across all departments and regional offices worldwide.", fontsize=11)
+    pg.insert_textbox(fitz.Rect(60, 250, 330, 330),
+                      "A second, clearly separate paragraph describing the methodology.", fontsize=11)
+    buf2 = io.BytesIO(); d2.save(buf2); d2.close()
+    doc2 = fitz.open(stream=buf2.getvalue(), filetype="pdf")
+    paras = page_paragraphs(doc2[0])
+    raw_lines = [l for l in doc2[0].get_text("text").split("\n") if l.strip()]
+    doc2.close()
+    check("wrapped lines merge into one paragraph",
+          any("every project we ran during the last fiscal year" in p for p in paras), str(paras))
+    check("fewer blocks than raw newlines", len(paras) < len(raw_lines), f"{len(paras)} vs {len(raw_lines)}")
+    check("separate paragraphs stay separate", len(paras) == 3, str(paras))
+    check("heading stays its own block", any(p.strip() == "Annual Report" for p in paras), str(paras))
+
+    print("\n=== G3: DOCX headings identified by Word style, not word count ===")
+    dx3 = _Doc()
+    h = dx3.add_paragraph("A Rather Long Chapter Heading About Cars")   # 7 words
+    h.style = dx3.styles["Heading 1"]
+    dx3.add_paragraph("بدأت صناعة السيارات في نهاية القرن التاسع عشر وتطورت بسرعة كبيرة جدا.")
+    b3 = io.BytesIO(); dx3.save(b3)
+    r = upload(client, [("styled.docx", b3.getvalue(), _DOCX)])
+    wait_job(client, r.json()["job_id"])
+    con = sqlite3.connect(TMPDB)
+    raw4 = con.execute("SELECT raw_text FROM documents WHERE filename='styled.docx'").fetchone()[0]
+    con.close()
+    lines4 = raw4.split("\n")
+    check("7-word Heading-styled title still merges", len(lines4) == 1, str(lines4))
+    check("merged block keeps both parts",
+          lines4[0].startswith("A Rather Long Chapter Heading About Cars — "), lines4[0][:60])
+    from engine.docx_engine import _is_heading
+    class _FakeStyle:  # a paragraph whose style lookup explodes must not crash
+        @property
+        def name(self): raise RuntimeError("no style")
+    class _FakePara:
+        style = _FakeStyle()
+    check("style lookup failure falls back to word count",
+          _is_heading(_FakePara(), "two words") is True and _is_heading(_FakePara(), "this has four words") is False)
 
     print("\n=== legacy rows: old marker-based pages still resolve ===")
     database.insert_document("legacy.pdf", "application/pdf",

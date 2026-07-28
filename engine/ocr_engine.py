@@ -53,15 +53,15 @@ def _is_cuda_oom(exc: Exception) -> bool:
     msg = str(exc).lower()
     return "cuda" in msg and ("out of memory" in msg or "memory" in msg)
 
-def run_ocr(image) -> list:
+def _read(image, detail: int):
     """
-    تشغيل OCR على صورة (مسار ملف، بايتات، أو مصفوفة numpy) وإعادة قائمة النصوص.
-    إذا امتلأت ذاكرة البطاقة أثناء العمل، ننتقل نهائياً إلى المعالج في نفس الجلسة
-    ونعيد محاولة الصورة نفسها — لا انهيار ولا فقدان بيانات.
+    نداء المحرك الفعلي مع صمام أمان الذاكرة: إذا امتلأت ذاكرة البطاقة أثناء العمل،
+    ننتقل نهائياً إلى المعالج في نفس الجلسة ونعيد محاولة الصورة نفسها —
+    لا انهيار ولا فقدان بيانات.
     """
     global reader, GPU_AVAILABLE, OCR_DEVICE
     try:
-        return reader.readtext(image, detail=0)
+        return reader.readtext(image, detail=detail)
     except Exception as e:
         if GPU_AVAILABLE and _is_cuda_oom(e):
             logger.error(f"❌ CUDA out of memory — switching to CPU for this session: {e}")
@@ -74,8 +74,26 @@ def run_ocr(image) -> list:
             except Exception:
                 pass
             reader = _make_reader(False)
-            return reader.readtext(image, detail=0)
+            return reader.readtext(image, detail=detail)
         raise
+
+def run_ocr(image) -> list:
+    """
+    تشغيل OCR على صورة (مسار ملف، بايتات، أو مصفوفة numpy) وإعادة قائمة النصوص.
+    العقد الأصلي محفوظ كما هو: قائمة سلاسل نصية.
+    """
+    return _read(image, detail=0)
+
+def run_ocr_boxes(image) -> list:
+    """
+    نفس المحرك لكن مع الإحداثيات: [(bbox, text, confidence), ...].
+
+    الإحداثيات هي المعلومة التي كنا نرميها سابقاً (detail=0)، وهي التي تسمح
+    بتجميع الأسطر والفقرات هندسياً بدل تخمينها من علامات الترقيم.
+    ملاحظة: لا نُعيد ترتيب الصناديق هنا إطلاقاً — ترتيب المحرك يبقى كما هو
+    حفاظاً على سلوك العربية (RTL) الموثّق في /status.
+    """
+    return _read(image, detail=1)
 
 def extract_text_from_image(image_source) -> str:
     """يستقبل مسار الصورة أو بايتاتها ويعيد النص المستخرج أو ينهار بخطأ واضح"""

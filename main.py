@@ -8,7 +8,7 @@ from engine.jobs import JobCancelled
 from engine.pdf_engine import process_hybrid_pdf, pdf_precheck, parse_page_selection, _MAX_OCR_PAGES
 from engine.docx_engine import process_docx
 from engine.text_engine import process_txt
-from engine.textflow import smart_join
+from engine.textflow import join_ocr
 from engine.database import (
     init_db, insert_document, search_documents, find_duplicate,
     delete_documents, list_documents, delete_document_by_id,
@@ -272,7 +272,7 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
                 if "max_ocr_pages" in item:
                     pdf_kwargs["max_ocr_pages"] = item["max_ocr_pages"]
                 extracted_text, page_map = process_hybrid_pdf(
-                    item["bytes"], ocr_engine.run_ocr, **pdf_kwargs,
+                    item["bytes"], ocr_engine.run_ocr_boxes, **pdf_kwargs,
                 )
             elif kind == "docx":
                 def _media_progress(done, total, label):
@@ -280,7 +280,7 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
                 extracted_text, page_map = process_docx(
                     item["bytes"],
                     force_ocr=item["force_ocr"],
-                    ocr_fn=ocr_engine.run_ocr if item["force_ocr"] else None,
+                    ocr_fn=ocr_engine.run_ocr_boxes if item["force_ocr"] else None,
                     progress=_media_progress,
                     is_cancelled=lambda: jobs.is_cancelled(job_id),
                 )
@@ -288,7 +288,7 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
                 extracted_text = process_txt(item["bytes"])
             else:
                 # الصور تُمرَّر كبايتات مباشرة، والدمج الذكي يبني فقرات مترابطة
-                extracted_text = smart_join(ocr_engine.run_ocr(item["bytes"]))
+                extracted_text = join_ocr(ocr_engine.run_ocr_boxes(item["bytes"]))
 
             insert_document(name, item["stored_type"], extracted_text, item["hash"],
                             workspace=item["workspace"], page_map=page_map)

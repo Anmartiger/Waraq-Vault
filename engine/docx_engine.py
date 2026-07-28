@@ -10,10 +10,27 @@ import os
 import zipfile
 
 from engine.jobs import JobCancelled
-from engine.textflow import smart_join
+from engine.textflow import join_ocr
 
-# العناوين وشبه الفقرات: أقل من هذا العدد من الكلمات لا يُحتسب فقرة مستقلة
+# أنماط Word التي تُعرِّف العنوان صراحةً — معلومة دقيقة لا تخمين
+_HEADING_STYLES = ("heading", "title", "subtitle", "عنوان")
+
+# احتياطي فقط: عندما لا يستخدم كاتب المستند أنماطاً (كل شيء Normal)
 _MIN_BLOCK_WORDS = 3
+
+def _is_heading(paragraph, text: str) -> bool:
+    """
+    تحديد العنوان من نمط Word نفسه أولاً (Heading 1، Title، ...) لأنه إعلان صريح
+    من كاتب المستند، ثم الرجوع إلى عدد الكلمات فقط للمستندات التي لا تستخدم أنماطاً.
+    الفارق عملي: عنوان من ست كلمات بنمط Heading كان يُعامَل سابقاً كفقرة عادية.
+    """
+    try:
+        style = (paragraph.style.name or "").strip().lower()
+    except Exception:
+        style = ""
+    if style.startswith(_HEADING_STYLES):
+        return True
+    return len(text.split()) < _MIN_BLOCK_WORDS
 
 # صيغ الصور النقطية داخل word/media القابلة للقراءة بمحرك OCR
 _MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
@@ -91,7 +108,7 @@ def _extract_media_ocr(file_bytes: bytes, ocr_fn, progress=None, is_cancelled=No
                 data = None
                 try:
                     data = archive.read(name)
-                    text = smart_join(ocr_fn(data))
+                    text = join_ocr(ocr_fn(data))
                     if text:
                         blocks.extend(l for l in text.split("\n") if l.strip())
                 except JobCancelled:
@@ -144,8 +161,8 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
             if isinstance(block, Paragraph):
                 text = block.text.strip()
                 if text:
-                    if len(text.split()) < _MIN_BLOCK_WORDS:
-                        # عنوان قصير: يُدمج مع الكتلة التالية بدل فقرة مستقلة
+                    if _is_heading(block, text):
+                        # عنوان: يُدمج مع الكتلة التالية بدل فقرة مستقلة
                         pending_heading.append(text)
                     else:
                         merged = " — ".join(pending_heading + [text]) if pending_heading else text

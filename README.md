@@ -284,10 +284,10 @@ execution strategy is a local change, not a refactor:
 
 | File | What to change here |
 |---|---|
-| [`engine/ocr_engine.py`](engine/ocr_engine.py) | `run_ocr(image)` &mdash; the single entry point every caller uses. Device detection, thread pinning, and the CUDA-OOM fallback live here |
-| [`engine/pdf_engine.py`](engine/pdf_engine.py) | Page rasterisation: `fitz.Matrix(2, 2)` (the render zoom) and `TEXT_LAYER_THRESHOLD = 20` (when a page counts as scanned) |
+| [`engine/ocr_engine.py`](engine/ocr_engine.py) | `run_ocr_boxes(image)` &mdash; what every caller uses, returns `[(bbox, text, confidence)]`. `run_ocr(image)` keeps the older list-of-strings contract. Device detection, thread pinning and the CUDA-OOM fallback live here |
+| [`engine/pdf_engine.py`](engine/pdf_engine.py) | Page rasterisation: `fitz.Matrix(2, 2)` (the render zoom) and `TEXT_LAYER_THRESHOLD = 20` (when a page counts as scanned). `page_paragraphs()` reads the text layer as real blocks via `get_text("dict")` |
 | [`engine/jobs.py`](engine/jobs.py) | `ThreadPoolExecutor(max_workers=1)` &mdash; the deliberate serialisation. Page-level parallelism starts here |
-| [`engine/textflow.py`](engine/textflow.py) | `smart_join()` &mdash; how OCR line boxes become searchable paragraphs |
+| [`engine/textflow.py`](engine/textflow.py) | `join_ocr()` / `join_boxes()` &mdash; paragraphs built from box **geometry**; `smart_join()` is the punctuation fallback for engines that return no coordinates |
 
 Check what hardware you actually got: `curl 127.0.0.1:8000/status`, or watch the startup
 log for `✅ OCR engine ready on …`. The header chip in the UI shows the same thing.
@@ -326,8 +326,14 @@ single-page runs vary by ~20% and English text is not representative.
 - **Do not "fix" the reversed RTL output.** EasyOCR returns Arabic tokens in reverse visual
   order; the index and the query are normalised identically, so search works. `/status` says
   so explicitly. Changing it silently breaks matching.
-- **Keep `run_ocr`'s contract**: takes a path, bytes, or a numpy array; returns a list of
-  strings. Every caller (images, PDF pages, DOCX embedded media) depends on that shape.
+- **Keep the OCR contracts.** Both take a path, bytes, or a numpy array. `run_ocr_boxes`
+  returns `[(bbox, text, confidence)]` and is what the pipeline uses; `run_ocr` returns a plain
+  list of strings and is kept for anything that only wants text. `join_ocr()` accepts *either*
+  shape, so a replacement engine that cannot supply coordinates still works &mdash; it just falls
+  back to punctuation-based paragraphs.
+- **Never re-sort OCR boxes.** `join_boxes` groups by vertical geometry but preserves the
+  engine's original order, because re-sorting by x would silently change Arabic token order &mdash;
+  the exact thing the RTL rule above forbids.
 - **Recalibrate the user-facing estimate** in `main.py` (`_EST_SEC_PER_PAGE_CPU = 15.0`,
   `_EST_SEC_PER_PAGE_GPU = 1.5`) once you have real numbers &mdash; it drives the "~N min" the
   confirmation dialog promises, and the threshold `_CONFIRM_SCANNED_PAGES = 10`.

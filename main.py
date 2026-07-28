@@ -5,7 +5,7 @@ from fastapi.templating import Jinja2Templates
 from engine import ocr_engine
 from engine import jobs
 from engine.jobs import JobCancelled
-from engine.pdf_engine import process_hybrid_pdf, pdf_precheck, parse_page_selection
+from engine.pdf_engine import process_hybrid_pdf, pdf_precheck, parse_page_selection, _MAX_OCR_PAGES
 from engine.docx_engine import process_docx
 from engine.text_engine import process_txt
 from engine.textflow import smart_join
@@ -263,12 +263,16 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
                         jobs.add_progress(job_id, done=done, total=total, current=f"{name} — {label}")
                     else:
                         jobs.add_progress(job_id, current=f"{name} — {label}")
+                pdf_kwargs = {
+                    "force_ocr": item["force_ocr"],
+                    "pages": item.get("pages"),
+                    "progress": _page_progress,
+                    "is_cancelled": lambda: jobs.is_cancelled(job_id),
+                }
+                if "max_ocr_pages" in item:
+                    pdf_kwargs["max_ocr_pages"] = item["max_ocr_pages"]
                 extracted_text, page_map = process_hybrid_pdf(
-                    item["bytes"], ocr_engine.run_ocr,
-                    force_ocr=item["force_ocr"],
-                    pages=item.get("pages"),
-                    progress=_page_progress,
-                    is_cancelled=lambda: jobs.is_cancelled(job_id),
+                    item["bytes"], ocr_engine.run_ocr, **pdf_kwargs,
                 )
             elif kind == "docx":
                 def _media_progress(done, total, label):
@@ -427,6 +431,25 @@ async def upload_document(
             "files": confirm_files,
             "page_selection_allowed": len(prepared) == 1 and prepared[0]["kind"] == "pdf",
         })
+
+    # 4b. رفض فوري للملفات التي تتجاوز حدّ الصفحات المصوَّرة (5 صفحات) قبل الدخول
+    # إلى طابور المعالجة — توفير للموارد ومنع معالجة أول 5 صفحات ثم الانهيار.
+    _bypass_ocr_limit = confirmed or bool(pages)
+    if not _bypass_ocr_limit:
+        for p in pdf_items:
+            scanned = p.get("scanned_count", 0)
+            if scanned > _MAX_OCR_PAGES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"الملف {p['name']} يحتوي على {scanned} صفحات مصورة تتجاوز الحد المسموح "
+                           f"({_MAX_OCR_PAGES}). يرجى تقسيم الملف وإعادة المحاولة."
+                )
+
+    # 4c. ضبط صمام أمان OCR داخل المعالج: متى نطلق العنان ومتى نبقي الحد الافتراضي (5 صفحات).
+    # التأكيد الصريح (confirmed=True) أو تحديد صفحات بعينها يعني ثقة المستخدم — نرفع القيد.
+    if _bypass_ocr_limit:
+        for p in prepared:
+            p["max_ocr_pages"] = None
 
     # 5. فحص التكرار يسبق المعالجة حتى لا ينتظر المستخدم OCR بلا فائدة
     for p in prepared:

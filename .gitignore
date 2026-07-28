@@ -20,3 +20,6 @@ Thumbs.db
 # scratch
 testdocs/
 *.tmp
+
+# AI local config
+.clinerules

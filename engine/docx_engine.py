@@ -32,38 +32,6 @@ def _is_heading(paragraph, text: str) -> bool:
         return True
     return len(text.split()) < _MIN_BLOCK_WORDS
 
-# صيغ الصور النقطية داخل word/media القابلة للقراءة بمحرك OCR
-_MEDIA_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
-
-def _blocks_from(child, parent):
-    """تحويل عنصر XML إلى فقرة أو جدول، مع فك أغلفة عناصر التحكم بالمحتوى."""
-    if isinstance(child, CT_P):
-        yield Paragraph(child, parent)
-    elif isinstance(child, CT_Tbl):
-        yield Table(child, parent)
-    elif child.tag == qn("w:sdt"):
-        # عناصر التحكم بالمحتوى (Content Controls) تغلّف فقرات وجداول حقيقية،
-        # وتجاهلها يعني ضياع نصها وفواصل صفحاتها من الفهرسة
-        content = child.find(qn("w:sdtContent"))
-        if content is not None:
-            for sub in content.iterchildren():
-                yield from _blocks_from(sub, parent)
-
-def _iter_blocks(parent):
-    """
-    المرور على الفقرات والجداول بترتيب ظهورها الفعلي داخل المستند،
-    لأن python-docx يعيدها في قائمتين منفصلتين ويضيع الترتيب الأصلي.
-    """
-    if isinstance(parent, _Document):
-        parent_elm = parent.element.body
-    elif isinstance(parent, _Cell):
-        parent_elm = parent._tc
-    else:
-        raise ValueError("عنصر غير مدعوم للمرور عليه")
-
-    for child in parent_elm.iterchildren():
-        yield from _blocks_from(child, parent)
-
 def _count_page_breaks(element) -> int:
     """
     عدّ فواصل الصفحات داخل عنصر معيّن:
@@ -86,43 +54,42 @@ def _row_text(row) -> str:
             cells.append(text)
     return " | ".join(cells)
 
-def _extract_media_ocr(file_bytes: bytes, ocr_fn, progress=None, is_cancelled=None) -> list:
+# ── Inline image OCR (document-order interleaving) ──────────────────────────
+
+def _ocr_inline_images(para_elm, document, docx_zip, ocr_fn) -> list:
     """
-    استخراج الصور النقطية المدمجة من word/media وقراءتها بمحرك OCR.
-    صورة تالفة واحدة لا تُسقط المستند كاملاً — تُتجاهل ويستمر الباقي.
+    استخراج الصور المضمَّنة داخل فقرة XML (سواء رسمية حديثة w:drawing أو
+    قديمة w:pict) وقراءتها فوراً بمحرك OCR في موضعها الحقيقي من المستند.
     """
-    blocks = []
-    # ZipFile لا يغلق الكائن الذي يُمرَّر إليه، لذا نمسك المخزن بأنفسنا ونغلقه صراحةً
-    buffer = io.BytesIO(file_bytes)
+    texts = []
+    # DrawingML — modern inline / floating images
+    for drawing in para_elm.findall(".//" + qn("w:drawing")):
+        for blip in drawing.findall(".//" + qn("a:blip")):
+            _ocr_image_by_rid(blip.get(qn("r:embed")), document, docx_zip, ocr_fn, texts)
+    # VML — legacy picture format
+    for pict in para_elm.findall(".//" + qn("w:pict")):
+        for imagedata in pict.findall(".//" + qn("v:imagedata")):
+            _ocr_image_by_rid(imagedata.get(qn("r:id")), document, docx_zip, ocr_fn, texts)
+    return texts
+
+def _ocr_image_by_rid(rId, document, docx_zip, ocr_fn, texts):
+    """حلّ معرف علاقة الصورة، قراءة بايتاتها من الـ ZIP، و OCR فوري."""
+    if not rId:
+        return
     try:
-        with zipfile.ZipFile(buffer) as archive:
-            media = sorted(
-                n for n in archive.namelist()
-                if n.startswith("word/media/") and os.path.splitext(n)[1].lower() in _MEDIA_EXTS
-            )
-            for index, name in enumerate(media, start=1):
-                if is_cancelled and is_cancelled():
-                    raise JobCancelled()
-                if progress:
-                    progress(index, len(media), f"embedded image {index}/{len(media)}")
-                data = None
-                try:
-                    data = archive.read(name)
-                    text = join_ocr(ocr_fn(data))
-                    if text:
-                        blocks.extend(l for l in text.split("\n") if l.strip())
-                except JobCancelled:
-                    raise
-                except Exception:
-                    # صورة مشوهة أو صيغة لا يفهمها المحرك — نتجاوزها بصمت مدروس
-                    continue
-                finally:
-                    # التدمير الفوري لبايتات الصورة: صورة واحدة فقط في الذاكرة
-                    # في أي لحظة مهما بلغ عدد الصور المدمجة في المستند
-                    del data
-    finally:
-        buffer.close()
-    return blocks
+        rel = document.part.rels[rId]
+        target = rel.target_ref
+        # حماية من اختراق المسار
+        if ".." in target or target.startswith("/"):
+            return
+        data = docx_zip.read(f"word/{target}")
+        ocr_text = join_ocr(ocr_fn(data))
+        if ocr_text:
+            texts.extend(line for line in ocr_text.split("\n") if line.strip())
+    except Exception:
+        pass  # صورة تالفة أو علاقة مفقودة — نتجاوز بصمت
+
+# ── Main engine ─────────────────────────────────────────────────────────────
 
 def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
                  progress=None, is_cancelled=None):
@@ -134,7 +101,8 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
     - الأسطر الفارغة تُتجاهل ولا ترفع عدّاد الفقرات.
     - العناوين القصيرة (أقل من 3 كلمات) تُدمَج مع الفقرة التالية ككتلة واحدة
       ذات معنى، فلا ترى الواجهة قفزات عشوائية في أرقام الفقرات.
-    - force_ocr مع ocr_fn: تُقرأ الصور المدمجة (word/media) وتُلحق نصوصها.
+    - force_ocr مع ocr_fn: تُقرأ الصور المدمجة في موضعها الطبيعي داخل
+      المستند، لا في نهايته (ترتيب قراءة بصري سليم).
     """
     try:
         document = Document(io.BytesIO(file_bytes))
@@ -147,6 +115,10 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
         current_page = 1
         pending_heading = []  # عناوين قصيرة بانتظار الفقرة التالية
 
+        # فتح الـ ZIP للوصول المباشر إلى الصور المضمَّنة (فقط عند الحاجة)
+        zip_buffer = io.BytesIO(file_bytes)
+        docx_zip = zipfile.ZipFile(zip_buffer) if (force_ocr and ocr_fn is not None) else None
+
         def append_block(text):
             if paginated and (not page_map or page_map[-1][1] != current_page):
                 page_map.append([len(blocks) + 1, current_page])
@@ -157,40 +129,77 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
                 append_block(" — ".join(pending_heading))
                 pending_heading.clear()
 
-        for block in _iter_blocks(document):
-            if isinstance(block, Paragraph):
-                text = block.text.strip()
-                if text:
-                    if _is_heading(block, text):
-                        # عنوان: يُدمج مع الكتلة التالية بدل فقرة مستقلة
-                        pending_heading.append(text)
-                    else:
-                        merged = " — ".join(pending_heading + [text]) if pending_heading else text
-                        pending_heading.clear()
-                        append_block(merged)
-                breaks = _count_page_breaks(block._p)
-            else:
-                # الجداول: كل صف كتلة مستقلة (بياناتها الرسمية تعيش في صفوف)
-                flush_pending()
-                for row in block.rows:
-                    row_text = _row_text(row)
-                    if row_text:
-                        append_block(row_text)
-                breaks = _count_page_breaks(block._tbl)
+        def _process_paragraph(para_elm):
+            nonlocal current_page
+            para = Paragraph(para_elm, document)
+            text = para.text.strip()
 
+            # الصور المضمَّنة في هذه الفقرة — تُقرأ في موضعها الحقيقي
+            image_texts = _ocr_inline_images(para_elm, document, docx_zip, ocr_fn) if docx_zip else []
+
+            if text:
+                if _is_heading(para, text):
+                    pending_heading.append(text)
+                else:
+                    merged = " — ".join(pending_heading + [text]) if pending_heading else text
+                    pending_heading.clear()
+                    append_block(merged)
+            elif image_texts:
+                # فقرة بلا نص لكنها تحمل صورة — أفرغ العناوين المعلقة أولاً
+                flush_pending()
+
+            for img_text in image_texts:
+                append_block(img_text)
+
+            breaks = _count_page_breaks(para_elm)
             if breaks:
                 current_page += breaks
 
-        flush_pending()
+        def _process_table(tbl_elm):
+            nonlocal current_page
+            table = Table(tbl_elm, document)
+            flush_pending()
+            for row in table.rows:
+                row_text = _row_text(row)
+                # تفحّص خلايا الجدول عن صور مضمَّنة أيضاً
+                if docx_zip is not None:
+                    for cell in row.cells:
+                        for p_elm in cell._tc.findall(".//" + qn("w:p")):
+                            for t in _ocr_inline_images(p_elm, document, docx_zip, ocr_fn):
+                                row_text = (row_text + " | " + t) if row_text else t
+                if row_text:
+                    append_block(row_text)
+            breaks = _count_page_breaks(tbl_elm)
+            if breaks:
+                current_page += breaks
 
-        # قراءة الصور المدمجة عند طلب المستخدم صراحة (Force OCR)
-        if force_ocr and ocr_fn is not None:
-            media_blocks = _extract_media_ocr(file_bytes, ocr_fn, progress, is_cancelled)
-            if media_blocks:
-                if page_map:
-                    # ما بعد هذا السطر ليس له صفحة معروفة — نوقف نسب الصفحات
-                    page_map.append([len(blocks) + 1, None])
-                blocks.extend(media_blocks)
+        def _process_sdt(sdt_elm):
+            """فك تغليف عناصر التحكم بالمحتوى (Content Controls)."""
+            content = sdt_elm.find(qn("w:sdtContent"))
+            if content is not None:
+                for sub in content.iterchildren():
+                    _process_element(sub)
+
+        def _process_element(elm):
+            if is_cancelled and is_cancelled():
+                raise JobCancelled()
+            if isinstance(elm, CT_P):
+                _process_paragraph(elm)
+            elif isinstance(elm, CT_Tbl):
+                _process_table(elm)
+            elif elm.tag == qn("w:sdt"):
+                _process_sdt(elm)
+
+        try:
+            # المرور على جسم المستند بعناصره الحقيقية (وليس قائمتين منفصلتين)
+            for child in document.element.body.iterchildren():
+                _process_element(child)
+        finally:
+            if docx_zip is not None:
+                docx_zip.close()
+            zip_buffer.close()
+
+        flush_pending()
 
         return "\n".join(blocks), page_map
 

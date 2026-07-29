@@ -336,7 +336,8 @@ with client:
     check("12 scanned pages -> 413 confirm_ocr", r.status_code == 413, r.text)
     d = r.json()["detail"]
     check("payload has estimate + device + files", d.get("reason") == "confirm_ocr"
-          and d.get("estimate_seconds", 0) > 0 and d.get("files") and d.get("page_selection_allowed") is True, str(d))
+          and d.get("estimate_seconds_min", 0) > 0 and d.get("estimate_seconds_max", 0) > 0
+          and d.get("files") and d.get("page_selection_allowed") is True, str(d))
     r = upload(client, [("book12.pdf", blank_pdf(12), "application/pdf")], confirmed=True)
     check("confirmed=true proceeds (202)", r.status_code == 202, r.text)
     j = wait_job(client, r.json()["job_id"])

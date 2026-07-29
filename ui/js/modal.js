@@ -63,8 +63,16 @@ function refreshEstimate() {
     estimateEl.className = "modal-estimate warn";
     okBtn.disabled = true;
   } else {
+    var est;
+    if (choiceCfg.perPageSecondsMax !== undefined) {
+      est = choiceCfg.estimator(
+        parsed.count * choiceCfg.perPageSecondsMin,
+        parsed.count * choiceCfg.perPageSecondsMax);
+    } else {
+      est = choiceCfg.estimator(parsed.count * choiceCfg.perPageSeconds);
+    }
     estimateEl.textContent = parsed.count + " page" + (parsed.count === 1 ? "" : "s") +
-                             " — estimated " + choiceCfg.estimator(parsed.count * choiceCfg.perPageSeconds);
+                             " — estimated " + est;
     estimateEl.className = "modal-estimate";
     okBtn.disabled = false;
   }
@@ -178,13 +186,25 @@ export function confirmDelete(label, extraHtml) {
   });
 }
 
-function humanDuration(seconds) {
+function _formatSingle(seconds) {
   seconds = Math.max(1, Math.round(seconds || 0));
   if (seconds < 90) return seconds + " sec";
   var mins = Math.round(seconds / 60);
+  if (mins < 1) mins = 1;               // never show "0 min"
   if (mins < 90) return "~" + mins + " min";
   var hours = Math.floor(mins / 60), rest = mins % 60;
   return "~" + hours + "h" + (rest ? " " + rest + "m" : "");
+}
+
+function humanDuration(lo, hi) {
+  lo = Math.max(1, Math.round(lo || 0));
+  hi = Math.max(1, Math.round(hi || 0));
+  // single value — legacy call or estimator callback with one argument
+  if (hi === undefined || hi === lo) return _formatSingle(lo);
+  var loMin = Math.max(1, Math.round(lo / 60));
+  var hiMin = Math.max(1, Math.round(hi / 60));
+  if (loMin === hiMin) return "~" + loMin + " min";
+  return "~" + loMin + "–" + hiMin + " min";
 }
 
 // The CPU safety valve: there is no page limit any more, so a big scan is
@@ -192,7 +212,10 @@ function humanDuration(seconds) {
 export function confirmBigScan(detail) {
   detail = detail || {};
   var total = detail.total_scanned_pages || 0;
-  var perPage = total ? (detail.estimate_seconds || 0) / total : 0;
+  var estMin = detail.estimate_seconds_min || 0;
+  var estMax = detail.estimate_seconds_max || 0;
+  var perPageMin = total ? estMin / total : 0;
+  var perPageMax = total ? estMax / total : 0;
   var files = (detail.files || []).map(function (f) {
     return "<li><b>" + escapeHtml(f.name) + "</b> — " + f.scanned_pages +
            " of " + f.total_pages + " pages need OCR</li>";
@@ -202,7 +225,7 @@ export function confirmBigScan(detail) {
   var html =
     "This upload needs OCR on <b>" + total + " scanned page" + (total === 1 ? "" : "s") + "</b>." +
     "<ul>" + files + "</ul>" +
-    "Estimated <b>" + humanDuration(detail.estimate_seconds) + "</b> on " +
+    "Estimated <b>" + humanDuration(estMin, estMax) + "</b> on " +
     escapeHtml(detail.device || "this machine") +
     ". Processing runs in the background — the app stays usable and you can cancel at any point.";
 
@@ -219,12 +242,13 @@ export function confirmBigScan(detail) {
     opts.choices = {
       name: "pagemode",
       options: [
-        { value: "all", label: "All pages", hint: humanDuration(detail.estimate_seconds) },
+        { value: "all", label: "All pages", hint: humanDuration(estMin, estMax) },
         { value: "range", label: "A page range", hint: "e.g. 1-10", spec: true, placeholder: "1-10" },
         { value: "list", label: "Specific pages", hint: "e.g. 3, 7, 12", spec: true, placeholder: "3, 7, 12" }
       ],
       specLabel: maxPage ? "Pages to process (1–" + maxPage + ")" : "Pages to process",
-      perPageSeconds: perPage,
+      perPageSecondsMin: perPageMin,
+      perPageSecondsMax: perPageMax,
       maxPage: maxPage,
       estimator: humanDuration
     };

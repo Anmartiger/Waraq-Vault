@@ -62,8 +62,8 @@ _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 _MAX_BATCH = 50            # الحد الأقصى للملفات النصية/PDF في الرفعة الواحدة
 _MAX_IMAGES_PER_BATCH = 5  # الحد الأقصى للصور في الرفعة الواحدة
 _CONFIRM_SCANNED_PAGES = 5    # فوق هذا العدد نسأل المستخدم (ولا نرفض أبداً)
-_EST_SEC_PER_PAGE_GPU = 1.5   # تقدير تقريبي لزمن OCR للصفحة الواحدة
-_EST_SEC_PER_PAGE_CPU = 15.0
+_EST_SEC_PER_PAGE_GPU = (1.5,  8.0)  # (min, max) — varies by text density & image noise
+_EST_SEC_PER_PAGE_CPU = (15.0, 40.0) # (min, max) — varies by text density & image noise
 
 # نوع افتراضي يُخزَّن في قاعدة البيانات إذا لم يرسل المتصفح content_type
 _FALLBACK_TYPES = {
@@ -487,11 +487,12 @@ async def upload_document(
         })
 
     if total_scanned > _CONFIRM_SCANNED_PAGES and not confirmed:
-        per_page = _EST_SEC_PER_PAGE_GPU if ocr_engine.GPU_AVAILABLE else _EST_SEC_PER_PAGE_CPU
+        lo, hi = _EST_SEC_PER_PAGE_GPU if ocr_engine.GPU_AVAILABLE else _EST_SEC_PER_PAGE_CPU
         raise HTTPException(status_code=413, detail={
             "reason": "confirm_ocr",
             "total_scanned_pages": total_scanned,
-            "estimate_seconds": round(total_scanned * per_page),
+            "estimate_seconds_min": max(1, round(total_scanned * lo)),
+            "estimate_seconds_max": max(1, round(total_scanned * hi)),
             "device": ocr_engine.OCR_DEVICE,
             "files": confirm_files,
             "page_selection_allowed": len(prepared) == 1 and prepared[0]["kind"] == "pdf",

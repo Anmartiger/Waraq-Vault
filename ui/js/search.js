@@ -5,15 +5,16 @@ import { escapeHtml } from "./utils.js";
 import { form, input, setStatus, showEmpty } from "./dom.js";
 import { renderResults } from "./results.js";
 import { getScope } from "./files.js";
+import { t } from "./i18n.js";
 
 export function runSearch(q) {
   q = (q || "").trim();
   if (q.length < 2) {
-    showEmpty("Type at least 2 characters to search…");
-    setStatus("Ready");
+    showEmpty(t("empty-min-chars"));
+    setStatus(t("status-ready"));
     return;
   }
-  setStatus("Searching for <b>" + escapeHtml(q) + "</b> …");
+  setStatus(t("status-searching", "<b>" + escapeHtml(q) + "</b>"));
 
   var url = "/search?q=" + encodeURIComponent(q);
   var scope = getScope();
@@ -25,15 +26,15 @@ export function runSearch(q) {
     .then(function (data) {
       var list = (data && data.results) || [];
       if (!list.length) {
-        showEmpty("No results for “" + q + "”");
-        setStatus("No matches for <b>" + escapeHtml(q) + "</b>");
+        showEmpty(t("empty-no-results", q));
+        setStatus(t("status-no-matches", "<b>" + escapeHtml(q) + "</b>"));
         return;
       }
-      var t = renderResults(list, q);
-      setStatus(t.totalMatches + " " + t.hitWord + " in " + t.docs + " " + t.docWord);
+      var result = renderResults(list, q);
+      setStatus(result.totalMatches + " " + result.hitWord + " " + t("result-in") + " " + result.docs + " " + result.docWord);
     })
     .catch(function (err) {
-      setStatus("Search failed: " + escapeHtml(err.message));
+      setStatus(t("status-search-failed", escapeHtml(err.message)));
     });
 }
 

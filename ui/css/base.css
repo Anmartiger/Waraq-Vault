@@ -73,6 +73,7 @@ button{font-family:inherit;}
 .wordmark{font-family:Georgia,"Times New Roman",serif;font-size:24px;font-weight:700;letter-spacing:.5px;}
 .wordmark .v{color:var(--brassl);}
 .tag{display:block;font-size:11.5px;color:#BAD0CD;direction:rtl;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+html[dir="ltr"] .tag{direction:ltr;}
 .top-actions{display:flex;align-items:center;gap:8px;}
 .iconbtn{
   width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:15px;line-height:1;
@@ -148,9 +149,10 @@ button{font-family:inherit;}
   .files{
     position:fixed; inset-block:0; inset-inline-start:56px; width:min(300px,86vw);
     z-index:40; box-shadow:var(--shadow);
-    /* الانزلاق يجب أن يتجاوز عرض اللوحة + إزاحة الشريط الجانبي (56px) بالكامل */
     transform:translateX(calc(100% + 64px)); transition:transform .2s ease;
   }
+  html[dir="rtl"] .files{transform:translateX(calc(100% + 64px));}
+  html[dir="ltr"] .files{transform:translateX(calc(-100% - 64px));}
   .files.open{transform:translateX(0);}
   .only-narrow{display:inline-flex;}
 }

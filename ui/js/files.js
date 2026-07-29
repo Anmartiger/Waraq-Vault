@@ -9,6 +9,7 @@ import {
 } from "./dom.js";
 import { confirmDelete } from "./modal.js";
 import { runSearch } from "./search.js";
+import { t } from "./i18n.js";
 
 var state = {
   docs: [],
@@ -31,9 +32,9 @@ function kindOf(doc) {
 }
 
 function fmtChars(n) {
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M chars";
-  if (n >= 1000) return Math.round(n / 1000) + "K chars";
-  return n + " chars";
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return Math.round(n / 1000) + "K";
+  return String(n);
 }
 
 function rerunSearch() {
@@ -50,10 +51,10 @@ export function getScope() {
 function renderScopeBar() {
   if (state.docId != null) {
     var doc = state.docs.find(function (d) { return d.id === state.docId; });
-    scopeLabel.textContent = "Searching in: " + (doc ? doc.filename : "#" + state.docId);
+    scopeLabel.textContent = t("scope-searching-file", doc ? doc.filename : "#" + state.docId);
     scopeBar.hidden = false;
   } else if (state.workspace) {
-    scopeLabel.textContent = "Searching in workspace: " + state.workspace;
+    scopeLabel.textContent = t("scope-searching-ws", state.workspace);
     scopeBar.hidden = false;
   } else {
     scopeBar.hidden = true;
@@ -64,7 +65,7 @@ function renderScopeBar() {
 function renderWorkspaces() {
   var total = state.docs.length;
   var rows = ['<div class="ws-row' + (state.workspace === "" ? " active" : "") + '" data-ws="">' +
-              '<span class="ws-name">All files</span><span class="ws-n">' + total + "</span></div>"];
+              '<span class="ws-name" data-i18n="chip-all">' + t("chip-all") + '</span><span class="ws-n">' + total + "</span></div>"];
   state.workspaces.forEach(function (w) {
     rows.push(
       '<div class="ws-row' + (state.workspace === w.name ? " active" : "") + '" data-ws="' + escapeHtml(w.name) + '">' +
@@ -88,10 +89,12 @@ function visibleDocs() {
 
 function renderDocs() {
   var docs = visibleDocs();
-  filesCount.textContent = state.docs.length ? state.docs.length + " files" : "";
+  filesCount.innerHTML = state.docs.length
+    ? state.docs.length + ' <span data-i18n="files-label">' + t("files-label") + '</span>'
+    : "";
   if (!docs.length) {
     docList.innerHTML = '<div class="doc-empty">' +
-      (state.docs.length ? "Nothing matches this filter." : "No documents yet — upload something.") + "</div>";
+      (state.docs.length ? t("doc-empty-filter") : t("doc-empty-none")) + "</div>";
   } else {
     docList.innerHTML = docs.map(function (d) {
       var checked = state.selected.has(d.id) ? " checked" : "";
@@ -102,9 +105,9 @@ function renderDocs() {
           '<span class="d-meta">' + typeLabel(d.content_type) + " · " + fmtChars(d.chars || 0) +
           (state.workspace ? "" : " · " + escapeHtml(d.workspace || "Default")) + "</span></span>" +
         (d.openable
-          ? '<button type="button" class="d-del d-open" title="Open the original file" data-open="' + d.id + '">↗</button>'
+          ? '<button type="button" class="d-del d-open" title="' + t("result-open-title") + '" data-open="' + d.id + '">↗</button>'
           : "") +
-        '<button type="button" class="d-del" title="Delete this file" data-del="' + d.id + '">🗑</button>' +
+        '<button type="button" class="d-del" title="' + t("sel-delete") + '" data-del="' + d.id + '">🗑</button>' +
       "</div>";
     }).join("");
   }
@@ -115,7 +118,7 @@ function renderDocs() {
 function renderSelBar() {
   var n = state.selected.size;
   selBar.hidden = n === 0;
-  selCount.textContent = n + " selected";
+  selCount.innerHTML = n + ' <span data-i18n="selected-label">' + t("selected-label") + '</span>';
 }
 
 function renderDetails() {
@@ -124,21 +127,21 @@ function renderDetails() {
     detBody.innerHTML =
       '<div class="det-card">' +
         '<div class="det-name">' + escapeHtml(doc.filename) + "</div>" +
-        '<div class="det-kv"><span class="k">Type</span><span class="v">' + typeLabel(doc.content_type) + "</span></div>" +
-        '<div class="det-kv"><span class="k">Workspace</span><span class="v">' + escapeHtml(doc.workspace || "Default") + "</span></div>" +
-        '<div class="det-kv"><span class="k">Extracted text</span><span class="v">' + fmtChars(doc.chars || 0) + "</span></div>" +
-        '<div class="det-kv"><span class="k">Indexed</span><span class="v">' + escapeHtml(doc.created_at || "—") + "</span></div>" +
-        '<div class="det-kv"><span class="k">ID</span><span class="v">#' + doc.id + "</span></div>" +
+        '<div class="det-kv"><span class="k">' + t("det-type") + '</span><span class="v">' + typeLabel(doc.content_type) + "</span></div>" +
+        '<div class="det-kv"><span class="k">' + t("det-workspace") + '</span><span class="v">' + escapeHtml(doc.workspace || "Default") + "</span></div>" +
+        '<div class="det-kv"><span class="k">' + t("det-chars") + '</span><span class="v">' + fmtChars(doc.chars || 0) + "</span></div>" +
+        '<div class="det-kv"><span class="k">' + t("det-indexed") + '</span><span class="v">' + escapeHtml(doc.created_at || "—") + "</span></div>" +
+        '<div class="det-kv"><span class="k">' + t("det-id") + '</span><span class="v">#' + doc.id + "</span></div>" +
       "</div>" +
       '<div class="det-actions">' +
         (doc.openable
-          ? '<button type="button" class="btn-open" id="det-open">Open original ↗</button>'
+          ? '<button type="button" class="btn-open" id="det-open">' + t("det-open") + '</button>'
           : '<button type="button" class="btn-open" disabled ' +
-            'title="Uploaded before file-opening existed — re-upload to enable">Open original ↗</button>') +
-        '<button type="button" class="btn-del" id="det-delete">Delete file</button>' +
-        '<button type="button" class="btn-ghost-mini" id="det-unscope">Clear selection</button>' +
+            'title="' + t("det-open-disabled") + '">' + t("det-open") + '</button>') +
+        '<button type="button" class="btn-del" id="det-delete">' + t("det-delete") + '</button>' +
+        '<button type="button" class="btn-ghost-mini" id="det-unscope">' + t("det-unscope") + '</button>' +
       "</div>" +
-      '<div class="det-hint">Search is scoped to this file — clear to search everything.</div>';
+      '<div class="det-hint">' + t("det-scope-hint") + '</div>';
     document.getElementById("det-delete").addEventListener("click", function () { deleteOne(doc.id, doc.filename); });
     var detOpen = document.getElementById("det-open");
     if (detOpen) detOpen.addEventListener("click", function () { openOriginal(doc.id); });
@@ -149,16 +152,16 @@ function renderDetails() {
     state.docs.forEach(function (d) { byType[kindOf(d)]++; chars += d.chars || 0; });
     detBody.innerHTML =
       '<div class="statgrid">' +
-        '<div class="stat"><div class="n">' + state.docs.length + '</div><div class="l">documents</div></div>' +
-        '<div class="stat"><div class="n">' + state.workspaces.length + '</div><div class="l">workspaces</div></div>' +
+        '<div class="stat"><div class="n">' + state.docs.length + '</div><div class="l">' + t("det-stats-documents") + '</div></div>' +
+        '<div class="stat"><div class="n">' + state.workspaces.length + '</div><div class="l">' + t("det-stats-workspaces") + '</div></div>' +
         '<div class="stat"><div class="n">' + byType.pdf + '</div><div class="l">PDF</div></div>' +
         '<div class="stat"><div class="n">' + byType.docx + '</div><div class="l">DOCX</div></div>' +
         '<div class="stat"><div class="n">' + byType.txt + '</div><div class="l">TXT</div></div>' +
-        '<div class="stat"><div class="n">' + byType.image + '</div><div class="l">images</div></div>' +
+        '<div class="stat"><div class="n">' + byType.image + '</div><div class="l">' + t("det-stats-images") + '</div></div>' +
       "</div>" +
-      '<div class="det-card"><div class="det-kv"><span class="k">Indexed text</span><span class="v">' + fmtChars(chars) + "</span></div>" +
-      '<div class="det-kv"><span class="k">Storage</span><span class="v">local · waraq.db</span></div></div>' +
-      '<div class="det-hint">Select a file in the library to see its details, or click one to search inside it.</div>';
+      '<div class="det-card"><div class="det-kv"><span class="k">' + t("det-chars") + '</span><span class="v">' + fmtChars(chars) + "</span></div>" +
+      '<div class="det-kv"><span class="k">' + t("det-storage") + '</span><span class="v">' + t("det-stats-storage") + '</span></div></div>' +
+      '<div class="det-hint">' + t("det-stats-hint") + '</div>';
   }
 }
 
@@ -197,10 +200,10 @@ function deleteOne(id, name) {
       .then(function () {
         state.selected.delete(id);
         if (state.docId === id) state.docId = null;
-        setStatus("🗑️ Deleted <b>" + escapeHtml(name) + "</b> from the index.");
+        setStatus(t("status-deleted-one", "<b>" + escapeHtml(name) + "</b>"));
         return afterMutation();
       })
-      .catch(function (err) { setStatus("Delete failed: " + escapeHtml(err.message)); });
+      .catch(function (err) { setStatus(t("status-delete-failed", escapeHtml(err.message))); });
   });
 }
 
@@ -218,10 +221,10 @@ function deleteSelected() {
       .then(function (d) {
         state.selected.clear();
         if (ids.indexOf(state.docId) > -1) state.docId = null;
-        setStatus("🗑️ Deleted <b>" + d.deleted + "</b> files from the index.");
+        setStatus(t("status-deleted-many", d.deleted));
         return afterMutation();
       })
-      .catch(function (err) { setStatus("Bulk delete failed: " + escapeHtml(err.message)); });
+      .catch(function (err) { setStatus(t("status-bulk-delete-failed", escapeHtml(err.message))); });
   });
 }
 
@@ -235,10 +238,10 @@ function deleteWorkspaceFlow(name) {
       .then(function (d) {
         if (state.workspace === name) state.workspace = "";
         state.docId = null;
-        setStatus("🗑️ Deleted workspace <b>" + escapeHtml(name) + "</b> (" + d.deleted + " files).");
+        setStatus(t("status-ws-deleted", "<b>" + escapeHtml(name) + "</b>", d.deleted));
         return afterMutation();
       })
-      .catch(function (err) { setStatus("Workspace delete failed: " + escapeHtml(err.message)); });
+      .catch(function (err) { setStatus(t("status-ws-delete-failed", escapeHtml(err.message))); });
   });
 }
 
@@ -261,6 +264,13 @@ export function refreshLibrary() {
 
 export function initFiles() {
   refreshLibrary();
+  // Re-render the library panels when the language switches so that
+  // dynamically-generated labels (detail cards, empty states, counters,
+  // scope bar) reflect the new language immediately.
+  document.documentElement.addEventListener("waraq-lang-changed", function () {
+    renderAll();
+    rerunSearch();
+  });
 
   wsList.addEventListener("click", function (e) {
     var del = e.target.closest("[data-del-ws]");

@@ -3,7 +3,7 @@
 
 import {
   showEmpty, input, filesPanel, detailsPanel, detailsClose, detailsToggle,
-  navFiles, railLibrary, railSearch, railUpload
+  langToggle, navFiles, railLibrary, railSearch, railUpload
 } from "./dom.js";
 import { initTheme } from "./theme.js";
 import { initSearch } from "./search.js";
@@ -11,6 +11,14 @@ import { initUpload, openPicker } from "./upload.js";
 import { initShowMore } from "./results.js";
 import { initFiles } from "./files.js";
 import { initDevice } from "./device.js";
+import { initI18n, setLang, getLang, t } from "./i18n.js";
+
+function initLang() {
+  initI18n();
+  langToggle.addEventListener("click", function () {
+    setLang(getLang() === "ar" ? "en" : "ar");
+  });
+}
 
 function initShell() {
   var appEl = document.querySelector(".app");
@@ -43,6 +51,7 @@ function initShell() {
 }
 
 initTheme();
+initLang();
 initShell();
 initSearch();
 initUpload();
@@ -50,4 +59,10 @@ initShowMore();
 initFiles();
 initDevice();
 
-showEmpty("Start by searching, or upload documents.");
+showEmpty(t("empty-start"));
+
+// When the user switches language, re-display the appropriate empty/search
+// state so that static text updates even when no search query is active.
+document.documentElement.addEventListener("waraq-lang-changed", function () {
+  if (input.value.trim().length < 2) showEmpty(t("empty-start"));
+});

@@ -45,6 +45,7 @@ export var detailsToggle = document.getElementById("details-toggle");
 export var themeToggle   = document.getElementById("theme-toggle");
 export var deviceChip    = document.getElementById("device-chip");
 export var deviceSelect  = document.getElementById("device-select");
+export var langToggle    = document.getElementById("lang-toggle");
 export var navFiles      = document.getElementById("nav-files");
 export var railLibrary   = document.getElementById("rail-library");
 export var railSearch    = document.getElementById("rail-search");

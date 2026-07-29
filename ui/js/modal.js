@@ -1,6 +1,7 @@
 // Themed confirm dialog — overwrites, deletions, and the big-scan OCR confirmation.
 
 import { escapeHtml } from "./utils.js";
+import { t } from "./i18n.js";
 
 var overlay   = document.getElementById("modal");
 var titleEl   = document.getElementById("modal-title");
@@ -53,13 +54,13 @@ function refreshEstimate() {
   }
   var parsed = countPages(inputEl.value, choiceCfg.maxPage);
   if (!inputEl.value.trim()) {
-    estimateEl.textContent = "Enter the pages you want.";
+    estimateEl.textContent = t("modal-bigscan-enter-pages");
     estimateEl.className = "modal-estimate warn";
     okBtn.disabled = true;
   } else if (parsed.invalid || !parsed.count) {
     estimateEl.textContent = choiceCfg.maxPage
-      ? "Not a valid selection — use numbers between 1 and " + choiceCfg.maxPage + "."
-      : "Not a valid selection.";
+      ? t("modal-bigscan-invalid-range", choiceCfg.maxPage)
+      : t("modal-bigscan-invalid");
     estimateEl.className = "modal-estimate warn";
     okBtn.disabled = true;
   } else {
@@ -71,8 +72,7 @@ function refreshEstimate() {
     } else {
       est = choiceCfg.estimator(parsed.count * choiceCfg.perPageSeconds);
     }
-    estimateEl.textContent = parsed.count + " page" + (parsed.count === 1 ? "" : "s") +
-                             " — estimated " + est;
+    estimateEl.textContent = t("modal-bigscan-est-pages", parsed.count, (parsed.count === 1 ? "" : "s"), est);
     estimateEl.className = "modal-estimate";
     okBtn.disabled = false;
   }
@@ -104,10 +104,10 @@ overlay.addEventListener("click", function (e) { if (e.target === overlay) close
 
 // Generic confirm. Resolves a boolean — or {ok, value} when input/choices are used.
 export function confirmDialog(opts) {
-  titleEl.textContent = opts.title || "Are you sure?";
+  titleEl.textContent = opts.title || t("modal-confirm");
   textEl.innerHTML = opts.html || "";
-  okBtn.textContent = opts.okText || "Confirm";
-  cancelBtn.textContent = opts.cancelText || "Cancel";
+  okBtn.textContent = opts.okText || t("modal-confirm");
+  cancelBtn.textContent = opts.cancelText || t("modal-cancel");
   okBtn.disabled = false;
 
   choiceCfg = opts.choices || null;
@@ -160,40 +160,36 @@ export function confirmDialog(opts) {
 export function confirmOverwrite(info) {
   info = info || {};
   var name = escapeHtml(info.filename || "this document");
-  var when = info.indexed_at ? " on " + escapeHtml(info.indexed_at) : "";
+  var when = info.indexed_at ? " " + escapeHtml(info.indexed_at) : "";
 
   var html = (info.match === "content")
-    ? "The same file content is already indexed as <b>" + name + "</b>" + when +
-      ".<br>Overwrite it, or cancel and keep what you have?"
-    : "A document named <b>" + name + "</b> was already indexed" + when +
-      ".<br>Overwrite it with this file, or cancel?";
+    ? t("modal-overwrite-content-match", "<b>" + name + "</b>", when + ".<br>")
+    : t("modal-overwrite-content-name", "<b>" + name + "</b>", when + ".<br>");
 
   return confirmDialog({
-    title: "This document is already indexed",
+    title: t("modal-overwrite-title"),
     html: html,
-    okText: "Overwrite"
+    okText: t("modal-overwrite-ok")
   });
 }
 
 // Shown before removing one document, several documents, or a whole workspace.
 export function confirmDelete(label, extraHtml) {
   return confirmDialog({
-    title: "Delete from the archive?",
-    html: "<b>" + escapeHtml(label) + "</b> will be removed from the archive and the search index." +
-          (extraHtml || "") +
-          "<br>The original files on your disk are not touched.",
-    okText: "Delete"
+    title: t("modal-delete-title"),
+    html: t("modal-delete-content", "<b>" + escapeHtml(label) + "</b>", (extraHtml || "") + "<br>"),
+    okText: t("modal-delete-ok")
   });
 }
 
 function _formatSingle(seconds) {
   seconds = Math.max(1, Math.round(seconds || 0));
-  if (seconds < 90) return seconds + " sec";
+  if (seconds < 90) return t("time-sec", seconds);
   var mins = Math.round(seconds / 60);
   if (mins < 1) mins = 1;               // never show "0 min"
-  if (mins < 90) return "~" + mins + " min";
+  if (mins < 90) return t("time-min", mins);
   var hours = Math.floor(mins / 60), rest = mins % 60;
-  return "~" + hours + "h" + (rest ? " " + rest + "m" : "");
+  return rest ? t("time-hm", hours, rest) : t("time-h", hours);
 }
 
 function humanDuration(lo, hi) {
@@ -203,8 +199,8 @@ function humanDuration(lo, hi) {
   if (hi === undefined || hi === lo) return _formatSingle(lo);
   var loMin = Math.max(1, Math.round(lo / 60));
   var hiMin = Math.max(1, Math.round(hi / 60));
-  if (loMin === hiMin) return "~" + loMin + " min";
-  return "~" + loMin + "–" + hiMin + " min";
+  if (loMin === hiMin) return t("time-min", loMin);
+  return t("time-range-min", loMin, hiMin);
 }
 
 // The CPU safety valve: there is no page limit any more, so a big scan is
@@ -216,24 +212,21 @@ export function confirmBigScan(detail) {
   var estMax = detail.estimate_seconds_max || 0;
   var perPageMin = total ? estMin / total : 0;
   var perPageMax = total ? estMax / total : 0;
-  var files = (detail.files || []).map(function (f) {
-    return "<li><b>" + escapeHtml(f.name) + "</b> — " + f.scanned_pages +
-           " of " + f.total_pages + " pages need OCR</li>";
+  var filesHtml = (detail.files || []).map(function (f) {
+    return "<li>" + t("modal-bigscan-file-line", "<b>" + escapeHtml(f.name) + "</b>", f.scanned_pages, f.total_pages) + "</li>";
   }).join("");
   var maxPage = (detail.files || []).reduce(function (m, f) { return Math.max(m, f.total_pages || 0); }, 0);
 
   var html =
-    "This upload needs OCR on <b>" + total + " scanned page" + (total === 1 ? "" : "s") + "</b>." +
-    "<ul>" + files + "</ul>" +
-    "Estimated <b>" + humanDuration(estMin, estMax) + "</b> on " +
-    escapeHtml(detail.device || "this machine") +
-    ". Processing runs in the background — the app stays usable and you can cancel at any point.";
+    t("modal-bigscan-needs-ocr", total, (total === 1 ? "" : "s")) +
+    (filesHtml ? "<ul>" + filesHtml + "</ul>" : "") +
+    t("modal-bigscan-estimate", "<b>" + humanDuration(estMin, estMax) + "</b>", escapeHtml(detail.device || "this machine"));
 
   var opts = {
-    title: "Large scan — how much should we read?",
+    title: t("modal-bigscan-title"),
     html: html,
-    okText: "Start processing",
-    cancelText: "Cancel"
+    okText: t("modal-bigscan-ok"),
+    cancelText: t("modal-cancel")
   };
 
   if (detail.page_selection_allowed) {
@@ -242,11 +235,11 @@ export function confirmBigScan(detail) {
     opts.choices = {
       name: "pagemode",
       options: [
-        { value: "all", label: "All pages", hint: humanDuration(estMin, estMax) },
-        { value: "range", label: "A page range", hint: "e.g. 1-10", spec: true, placeholder: "1-10" },
-        { value: "list", label: "Specific pages", hint: "e.g. 3, 7, 12", spec: true, placeholder: "3, 7, 12" }
+        { value: "all", label: t("modal-bigscan-all"), hint: humanDuration(estMin, estMax) },
+        { value: "range", label: t("modal-bigscan-range"), hint: "e.g. 1-10", spec: true, placeholder: "1-10" },
+        { value: "list", label: t("modal-bigscan-list"), hint: "e.g. 3, 7, 12", spec: true, placeholder: "3, 7, 12" }
       ],
-      specLabel: maxPage ? "Pages to process (1–" + maxPage + ")" : "Pages to process",
+      specLabel: maxPage ? t("modal-bigscan-spec-label", maxPage) : t("modal-bigscan-spec-label-nomax"),
       perPageSecondsMin: perPageMin,
       perPageSecondsMax: perPageMax,
       maxPage: maxPage,

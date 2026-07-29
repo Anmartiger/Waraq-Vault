@@ -3,6 +3,7 @@
 
 import { escapeHtml } from "./utils.js";
 import { deviceChip, deviceSelect, setStatus } from "./dom.js";
+import { t } from "./i18n.js";
 
 var KEY = "waraq-device";
 
@@ -34,7 +35,7 @@ function render(info) {
 }
 
 function apply(mode) {
-  setStatus("Switching OCR to <b>" + escapeHtml(mode) + "</b> — reloading models…");
+  setStatus(t("status-device-switching", "<b>" + escapeHtml(mode) + "</b>"));
   return fetch("/device", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -49,10 +50,10 @@ function apply(mode) {
     .then(function (info) {
       render(info);
       try { localStorage.setItem(KEY, info.mode); } catch (e) {}
-      setStatus("OCR now running on <b>" + escapeHtml(info.device) + "</b>.");
+      setStatus(t("status-device-switched", "<b>" + escapeHtml(info.device) + "</b>"));
     })
     .catch(function (err) {
-      setStatus("Device switch failed: " + escapeHtml(err.message));
+      setStatus(t("status-device-failed", escapeHtml(err.message)));
       return fetch("/device").then(function (r) { return r.json(); }).then(render);
     });
 }

@@ -3,6 +3,7 @@
 
 import { ARABIC, escapeHtml, renderHighlighted, typeLabel } from "./utils.js";
 import { resultsEl } from "./dom.js";
+import { t } from "./i18n.js";
 
 var INITIAL = 8;   // lines shown before the first "Show more"
 var BATCH   = 50;  // additional lines revealed per "Show more" click
@@ -58,13 +59,13 @@ function cardHtml(r) {
              '</div>';
     }).join("");
     var hidden = matches.length - INITIAL;
-    var btn = hidden > 0
-      ? '<button class="showmore" type="button" data-mode="more">Show ' + Math.min(BATCH, hidden) + ' more</button>'
-      : "";
-    // Only when the true total exceeds the safety cap we were able to send.
-    var capnote = (total > matches.length)
-      ? '<div class="capnote">Showing the first ' + matches.length + " of " + total + " matches.</div>"
-      : "";
+      var btn = hidden > 0
+        ? '<button class="showmore" type="button" data-mode="more">' + t("result-show-more", Math.min(BATCH, hidden)) + '</button>'
+        : "";
+      // Only when the true total exceeds the safety cap we were able to send.
+      var capnote = (total > matches.length)
+        ? '<div class="capnote">' + t("result-first-n", matches.length, total) + '</div>'
+        : "";
     body = '<div class="lines">' + rows + "</div>" + btn + capnote;
   } else {
     // Fallback: no per-line matches returned — show the single API snippet.
@@ -79,10 +80,10 @@ function cardHtml(r) {
         '<span class="badge">' + escapeHtml(typeLabel(r.content_type)) + "</span>" +
         (r.workspace && r.workspace !== "Default"
           ? '<span class="wsbadge">' + escapeHtml(r.workspace) + "</span>" : "") +
-        '<span class="hits">' + total + " match" + (total === 1 ? "" : "es") + "</span>" +
+        '<span class="hits">' + total + " " + (total === 1 ? t("result-match") : t("result-matches")) + "</span>" +
         (r.openable && r.id != null
           ? '<button type="button" class="openlink" data-open="' + r.id + '" ' +
-            'title="Open the original file">Open ↗</button>' : "") +
+            'title="' + t("result-open-title") + '">' + t("result-open") + '</button>' : "") +
       "</div>" +
       body +
     "</div>"
@@ -95,13 +96,13 @@ export function renderResults(list, q) {
   var totalMatches = list.reduce(function (a, r) {
     return a + ((r.match_count != null) ? r.match_count : (r.matches ? r.matches.length : 1));
   }, 0);
-  var docWord = list.length === 1 ? "document" : "documents";
-  var hitWord = totalMatches === 1 ? "match" : "matches";
+  var docWord = list.length === 1 ? t("result-document") : t("result-documents");
+  var hitWord = totalMatches === 1 ? t("result-match") : t("result-matches");
 
   resultsEl.innerHTML =
     '<div class="summary">' + totalMatches + " " + hitWord +
-      ' <span class="muted">in ' + list.length + " " + docWord +
-      " for “" + escapeHtml(q) + "”</span></div>" +
+      ' <span class="muted">' + t("result-in") + " " + list.length + " " + docWord +
+      " " + t("result-for") + " \u201c" + escapeHtml(q) + "\u201d</span></div>" +
     list.map(cardHtml).join("");
 
   return { totalMatches: totalMatches, docs: list.length, docWord: docWord, hitWord: hitWord };
@@ -126,7 +127,7 @@ export function initShowMore() {
       for (i = 0; i < shownEls.length; i++) shownEls[i].classList.remove("shown");
       lines.classList.remove("expanded");
       btn.setAttribute("data-mode", "more");
-      btn.textContent = "Show " + Math.min(BATCH, shownEls.length) + " more";
+      btn.textContent = t("result-show-more", Math.min(BATCH, shownEls.length));
       return;
     }
 
@@ -137,10 +138,10 @@ export function initShowMore() {
 
     var left = hiddenEls.length - reveal;
     if (left > 0) {
-      btn.textContent = "Show " + Math.min(BATCH, left) + " more";
+      btn.textContent = t("result-show-more", Math.min(BATCH, left));
     } else {
       btn.setAttribute("data-mode", "less");
-      btn.textContent = "Show less";
+      btn.textContent = t("result-show-less");
     }
   });
 }

@@ -12,6 +12,7 @@ import {
 import { runSearch } from "./search.js";
 import { confirmOverwrite, confirmBigScan } from "./modal.js";
 import { refreshLibrary } from "./files.js";
+import { t, i18nError } from "./i18n.js";
 
 var MAX_FILES = 50;
 var MAX_IMAGES = 5;
@@ -59,12 +60,12 @@ function renderJob(job) {
 
   var label;
   if (job.state === "queued") {
-    label = "Queued — position " + (job.queue_position || 0) + " in line…";
+    label = t("progress-queued", job.queue_position || 0);
   } else {
     label = (job.percent != null ? job.percent + "% — " : "") + (job.current || "processing…");
     var remaining = (job.total_units || 0) - (job.done_units || 0);
     if (job.items && job.items.length > 1 && remaining > 0) {
-      label += " (" + remaining + " remaining)";
+      label += " " + t("progress-remaining", remaining);
     }
   }
   progressLabel.textContent = label;
@@ -97,16 +98,18 @@ function finishJob(job) {
   if (job.state === "done") {
     var parts = [];
     if ((r.indexed || []).length) {
-      parts.push("✅ Indexed " + (r.indexed.length === 1 ? "<b>" + escapeHtml(r.indexed[0]) + "</b>" : r.indexed.length + " files"));
+      parts.push(r.indexed.length === 1
+        ? t("status-indexed-single", "<b>" + escapeHtml(r.indexed[0]) + "</b>")
+        : t("status-indexed-multi", r.indexed.length));
     }
-    if ((r.skipped || []).length) parts.push("⏭️ " + r.skipped.length + " skipped (already indexed)");
-    if ((r.failed || []).length) parts.push("❌ " + r.failed.length + " failed");
-    var note = r.replaced ? " (replaced the previous copy)" : "";
-    setStatus((parts.join(" · ") || "Done") + note + " — you can search now.");
+    if ((r.skipped || []).length) parts.push(t("status-skipped", r.skipped.length));
+    if ((r.failed || []).length) parts.push(t("status-failed-count", r.failed.length));
+    var note = r.replaced ? " " + t("status-replaced-note") : "";
+    setStatus((parts.join(" · ") || "Done") + note + t("status-done-search"));
   } else if (job.state === "cancelled") {
-    setStatus("🚫 Processing cancelled — nothing partial was indexed for the interrupted file.");
+    setStatus(t("status-cancelled"));
   } else {
-    setStatus("Processing failed: " + escapeHtml(job.error || "unknown error"));
+    setStatus(t("status-job-failed", escapeHtml(job.error || "unknown error")));
   }
 
   refreshLibrary();
@@ -130,7 +133,7 @@ function pollJob(jobId) {
     })
     .catch(function (err) {
       resetUploadUi();
-      setStatus("Lost track of the job: " + escapeHtml(err.message));
+      setStatus(t("status-job-lost", escapeHtml(err.message)));
     });
 }
 
@@ -144,35 +147,35 @@ function upload(fileList, opts) {
 
   // Client-side mirrors of the server rules.
   if (forced && files.length > 1 && !(images === files.length && images <= MAX_IMAGES)) {
-    setStatus("Force OCR is heavy on purpose — one file at a time, or up to " + MAX_IMAGES + " images.");
+    setStatus(t("status-force-ocr-limit", MAX_IMAGES));
     return;
   }
   if (files.length > MAX_FILES) {
-    setStatus("Too many files — up to " + MAX_FILES + " per upload.");
+    setStatus(t("status-too-many-files", MAX_FILES));
     return;
   }
   if (images > MAX_IMAGES) {
-    setStatus("Up to " + MAX_IMAGES + " images per upload (text formats can go up to " + MAX_FILES + ").");
+    setStatus(t("status-too-many-images", MAX_IMAGES, MAX_FILES));
     return;
   }
   for (var i = 0; i < files.length; i++) {
     if (/\.doc$/i.test(files[i].name || "")) {
-      setStatus("Old .doc format isn’t supported — please save it as .docx first.");
+      setStatus(t("status-doc-rejected"));
       return;
     }
     if (!isSupported(files[i])) {
-      setStatus("Unsupported file — please use PDF, Word (DOCX), text files, or images.");
+      setStatus(t("status-unsupported"));
       return;
     }
   }
 
-  var what = files.length === 1 ? "<b>" + escapeHtml(files[0].name) + "</b>" : files.length + " files";
-  setStatus("Uploading " + what + " …");
+  var what = files.length === 1 ? "<b>" + escapeHtml(files[0].name) + "</b>" : files.length + " " + t("files-count", files.length);
+  setStatus(t("status-uploading", what));
   drop.classList.add("busy");
   progressWrap.hidden = false;
   progressBar.classList.remove("indet");
   progressBar.style.width = "0%";
-  progressLabel.textContent = "Uploading…";
+  progressLabel.textContent = t("progress-uploading");
   progressItems.innerHTML = "";
 
   var fd = new FormData();
@@ -188,16 +191,16 @@ function upload(fileList, opts) {
     .then(function (res) {
       return res.json().then(function (data) {
         if (res.status === 409) {          // duplicate — stopped before any OCR
-          var clash = new Error("duplicate");
+          var clash = new Error(t("status-dup-cancelled"));
           clash.duplicate = (data && data.detail) || {};
           throw clash;
         }
         if (res.status === 413) {          // big scan — needs explicit consent
-          var big = new Error("confirm");
+          var big = new Error(t("status-bigscan-cancelled"));
           big.confirm = (data && data.detail) || {};
           throw big;
         }
-        if (!res.ok) throw new Error(detailText(data, res.status));
+        if (!res.ok) throw new Error(i18nError(data) || detailText(data, res.status));
         return data;
       });
     })
@@ -209,18 +212,18 @@ function upload(fileList, opts) {
       if (err.duplicate) {
         confirmOverwrite(err.duplicate).then(function (yes) {
           if (yes) upload(files, { overwrite: true, confirmed: opts.confirmed, pages: opts.pages });
-          else setStatus("Upload cancelled — the existing document was kept.");
+          else setStatus(t("status-dup-cancelled"));
         });
         return;
       }
       if (err.confirm) {
         confirmBigScan(err.confirm).then(function (res) {
           if (res.ok) upload(files, { overwrite: opts.overwrite, confirmed: true, pages: res.pages || "" });
-          else setStatus("Upload cancelled — nothing was processed.");
+          else setStatus(t("status-bigscan-cancelled"));
         });
         return;
       }
-      setStatus("Processing failed: " + escapeHtml(err.message));
+      setStatus(i18nError(err.message) || t("status-upload-failed", escapeHtml(err.message)));
     });
 }
 
@@ -251,7 +254,7 @@ export function initUpload() {
   // Cancel the in-flight job; the worker stops at the next page/image boundary.
   progressCancel.addEventListener("click", function () {
     if (!activeJob) return;
-    progressLabel.textContent = "Cancelling…";
+    progressLabel.textContent = t("progress-cancelling");
     fetch("/jobs/" + activeJob + "/cancel", { method: "POST" }).catch(function () {});
   });
 }

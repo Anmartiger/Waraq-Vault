@@ -308,6 +308,7 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
 
             kind = item["kind"]
             page_map = None
+            para_map = None
 
             if kind == "pdf":
                 def _page_progress(done, total, label):
@@ -323,13 +324,13 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
                 }
                 if "max_ocr_pages" in item:
                     pdf_kwargs["max_ocr_pages"] = item["max_ocr_pages"]
-                extracted_text, page_map = process_hybrid_pdf(
+                extracted_text, page_map, para_map = process_hybrid_pdf(
                     item["bytes"], ocr_engine.run_ocr_boxes, **pdf_kwargs,
                 )
             elif kind == "docx":
                 def _media_progress(done, total, label):
                     jobs.add_progress(job_id, current=f"{name} — {label}")
-                extracted_text, page_map = process_docx(
+                extracted_text, page_map, para_map = process_docx(
                     item["bytes"],
                     force_ocr=item["force_ocr"],
                     ocr_fn=ocr_engine.run_ocr_boxes if item["force_ocr"] else None,
@@ -352,7 +353,7 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
 
             insert_document(name, item["stored_type"], extracted_text, item["hash"],
                             workspace=item["workspace"], page_map=page_map,
-                            stored_name=stored_name)
+                            stored_name=stored_name, para_map=para_map)
             jobs.set_item(job_id, idx, "indexed")
             indexed.append(name)
 

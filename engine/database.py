@@ -3,7 +3,7 @@ import re
 import json
 from pathlib import Path
 
-from engine.textflow import page_for_line
+from engine.textflow import page_for_line, para_for_line
 
 # تحديد مسار قاعدة البيانات لتكون في الجذر الرئيسي للمشروع
 DB_PATH = Path(__file__).resolve().parent.parent / "waraq.db"
@@ -81,23 +81,32 @@ def init_db():
         con.execute("ALTER TABLE documents ADD COLUMN stored_name TEXT")
         con.commit()
         print("ℹ️ Added stored_name column — new uploads keep an openable copy.")
+    if "para_map" not in existing_columns:
+        con.execute("ALTER TABLE documents ADD COLUMN para_map TEXT")
+        con.commit()
+        print("ℹ️ Added para_map column — paragraph metadata per page stored cleanly.")
 
     con.close()
     print("✅ Database and FTS5 Schema initialized successfully.")
 
 def insert_document(filename: str, content_type: str, raw_text: str, file_hash: str = None,
-                    workspace: str = "Default", page_map: list = None, stored_name: str = None):
+                    workspace: str = "Default", page_map: list = None, stored_name: str = None,
+                    para_map: list = None):
     """إدخال مستند جديد إلى قاعدة البيانات.
     page_map: خريطة الصفحات [[أول_سطر, رقم_الصفحة], ...] — تُخزَّن خارج النص
-    حتى لا تلوّث فهرس البحث بفواصل وهمية."""
+    حتى لا تلوّث فهرس البحث بفواصل وهمية.
+    para_map: خريطة الفقرات [[أول_سطر, رقم_الصفحة, رقم_الفقرة], ...] — تُخزَّن خارج النص
+    ورقم الفقرة يُعاد تعيينه إلى 1 مع كل صفحة جديدة."""
     con = sqlite3.connect(DB_PATH)
     try:
         norm_text = normalize(raw_text)
         con.execute(
             "INSERT INTO documents (filename, content_type, raw_text, normalized_text, file_hash,"
-            " workspace, page_map, stored_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " workspace, page_map, stored_name, para_map)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (filename, content_type, raw_text, norm_text, file_hash,
-             workspace or "Default", json.dumps(page_map) if page_map else None, stored_name)
+             workspace or "Default", json.dumps(page_map) if page_map else None,
+             stored_name, json.dumps(para_map) if para_map else None)
         )
         con.commit()
     finally:
@@ -233,11 +242,13 @@ def _highlight_line(line: str, tokens: list) -> str:
 # لكن الصفوف المفهرسة قبل هذا الإصدار ما زالت تحملها — نقرأها كإرث ولا نعرضها كنتائج.
 _PAGE_MARKER = re.compile(r"^\s*---\s*صفحة\s*(\d+)\s*---\s*$")
 
-def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP, page_map: list = None):
+def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP,
+                       page_map: list = None, para_map: list = None):
     """
     البحث عن كل الأسطر التي تحتوي على كلمات البحث.
     أرقام الصفحات تأتي من خريطة الصفحات المخزّنة خارج النص (page_map)؛
     وللصفوف القديمة فقط نلتقطها من العلامات المتبقية داخل النص.
+    أرقام الفقرات تأتي من خريطة الفقرات (para_map) وتُعاد تعيينها لكل صفحة.
     """
     matches = []
     total = 0
@@ -257,6 +268,9 @@ def _find_line_matches(raw_text: str, tokens: list, cap: int = _HIGHLIGHT_CAP, p
                 page = page_for_line(page_map, i) if page_map else legacy_page
                 if page is not None:
                     entry["page"] = page
+                para = para_for_line(para_map, i) if para_map else None
+                if para is not None:
+                    entry["para"] = para
                 matches.append(entry)
     return matches, total
 
@@ -325,6 +339,7 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None, workspac
 
     sql = """
         SELECT d.id, d.filename, d.content_type, d.raw_text, d.workspace, d.page_map,
+               d.para_map,
                (d.stored_name IS NOT NULL) AS openable,
                snippet(documents_fts, 0, '<b>', '</b>', '...', 15) as snippet,
                bm25(documents_fts) AS rank
@@ -350,8 +365,10 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None, workspac
         results = []
         for row in cursor.fetchall():
             page_map = json.loads(row["page_map"]) if row["page_map"] else None
+            para_map = json.loads(row["para_map"]) if row["para_map"] else None
             # raw_text يُستخدم داخلياً فقط لاستخراج الأسطر ولا يُعاد كاملاً في الرد
-            matches, total = _find_line_matches(row["raw_text"], tokens, page_map=page_map)
+            matches, total = _find_line_matches(row["raw_text"], tokens,
+                                                page_map=page_map, para_map=para_map)
             results.append({
                 "id": row["id"],
                 "filename": row["filename"],

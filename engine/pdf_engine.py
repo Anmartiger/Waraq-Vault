@@ -2,7 +2,7 @@ import fitz  # PyMuPDF
 import numpy as np
 
 from engine.jobs import JobCancelled
-from engine.textflow import join_ocr
+from engine.textflow import join_ocr, smart_join
 
 def page_paragraphs(page) -> list:
     """
@@ -97,6 +97,7 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
     """
     lines = []
     page_map = []
+    para_map = []
     doc = None
     ocr_pages_done = 0
 
@@ -147,13 +148,19 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
                 # طبقة نصية موجودة: نأخذ الفقرات من تحليل التخطيط مباشرة
                 page_lines = page_paragraphs(page)
             if page_lines:
+                # دمج الأسطر المتجاورة في فقرات حقيقية — الفقرة وحدها تحصل على رقم،
+                # وليس كل سطر بمفرده. هذا يمنع التمزيق (para 2, para 5, para 8...).
+                merged = smart_join(page_lines)
+                paragraphs = [p for p in merged.split("\n") if p.strip()]
                 page_map.append([len(lines) + 1, real_page_no])
-                lines.extend(page_lines)
+                for idx, block_text in enumerate(paragraphs, start=1):
+                    para_map.append([len(lines) + idx, real_page_no, idx])
+                lines.extend(paragraphs)
 
             if progress:
                 progress(done, total_selected, f"page {real_page_no} ({done}/{total_selected})")
 
-        return "\n".join(lines), page_map
+        return "\n".join(lines), page_map, para_map
 
     except JobCancelled:
         # الإلغاء ليس خطأ — يُمرَّر كما هو ليتعامل معه نظام المهام

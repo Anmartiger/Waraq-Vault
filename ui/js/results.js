@@ -28,20 +28,30 @@ function cardHtml(r) {
   var body;
   if (matches.length) {
     var rows = matches.map(function (m, idx) {
-      // Only real, verifiable positions get a number: PDF/TXT have true lines.
-      // DOCX shows its page alone (a paragraph index means nothing to a reader),
-      // and images get no position at all.
-      var num = null, title;
+      // Format-specific metadata: PDF/DOCX show p.X, para Y (per-page counter);
+      // TXT shows L{Z}; images show no position at all.
+      var locParts = [], titleParts = [];
       if (unit === "line") {
-        num = "L" + m.line;
-        title = (m.page != null ? "Page " + m.page + ", line " + m.line : "Line " + m.line);
-      } else if (m.page != null) {
-        title = "Page " + m.page;
-      } else {
-        title = "Text block found by OCR — images have no real line numbers";
+        // TXT: line_number only, no paragraph tracking
+        locParts.push('<span class="ln">L' + m.line + '</span>');
+        titleParts.push("Line " + m.line);
+        titleParts.push("File: " + r.filename);
+      } else if (unit === "page") {
+        // PDF/DOCX: page number always present; paragraph number if available
+        var page = m.page;
+        var para = m.para;
+        if (page != null) {
+          locParts.push('<span class="pg">p.' + page + '</span>');
+          titleParts.push("Page " + page);
+        }
+        if (para != null) {
+          locParts.push('<span class="paralabel">para ' + para + '</span>');
+          titleParts.push("Paragraph " + para);
+        }
       }
-      var loc = (m.page != null ? '<span class="pg">p.' + m.page + '</span>' : "") +
-                (num ? '<span class="ln">' + num + '</span>' : "");
+      // Images (unit=block): no position markers at all — locParts stays empty
+      var loc = locParts.join("");
+      var title = titleParts.join("; ") || r.filename;
       return '<div class="line' + (idx >= INITIAL ? " extra" : "") + '" dir="auto">' +
                (loc ? '<span class="loc" title="' + title + '">' + loc + '</span>' : "") +
                '<span class="linetext">' + renderHighlighted(m.text) + '</span>' +

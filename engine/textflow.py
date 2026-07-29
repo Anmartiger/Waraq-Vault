@@ -105,3 +105,20 @@ def page_for_line(page_map, line_number):
         else:
             break
     return page
+
+def para_for_line(para_map, line_number):
+    """
+    إيجاد رقم الفقرة (داخل الصفحة الحالية) لسطر معيّن.
+    para_map: [[أول_سطر, رقم_الصفحة, رقم_الفقرة], ...]
+    رقم الفقرة يُعاد تعيينه إلى 1 مع كل صفحة جديدة.
+    تعيد None عندما لا تتوفر معلومات الفقرات.
+    """
+    if not para_map:
+        return None
+    para = None
+    for start_line, page_no, para_no in para_map:
+        if line_number >= start_line:
+            para = para_no
+        else:
+            break
+    return para

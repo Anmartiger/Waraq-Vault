@@ -112,7 +112,10 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
 
         blocks = []           # كل عنصر = سطر واحد في النص النهائي
         page_map = []         # [[أول_سطر, رقم_الصفحة], ...]
+        para_map = []         # [[أول_سطر, رقم_الصفحة, رقم_الفقرة], ...]
         current_page = 1
+        para_on_page = 0      # عداد الفقرات يعود إلى 1 مع كل صفحة جديدة
+        past_first_element = False  # فاصل الصفحة في أول عنصر وهمي — نتجاهله فقط
         pending_heading = []  # عناوين قصيرة بانتظار الفقرة التالية
 
         # فتح الـ ZIP للوصول المباشر إلى الصور المضمَّنة (فقط عند الحاجة)
@@ -120,8 +123,16 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
         docx_zip = zipfile.ZipFile(zip_buffer) if (force_ocr and ocr_fn is not None) else None
 
         def append_block(text):
-            if paginated and (not page_map or page_map[-1][1] != current_page):
-                page_map.append([len(blocks) + 1, current_page])
+            nonlocal para_on_page
+            if paginated:
+                if not page_map or page_map[-1][1] != current_page:
+                    page_map.append([len(blocks) + 1, current_page])
+                    para_on_page = 1
+                else:
+                    para_on_page += 1
+            else:
+                para_on_page += 1
+            para_map.append([len(blocks) + 1, current_page, para_on_page])
             blocks.append(text)
 
         def flush_pending():
@@ -130,9 +141,17 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
                 pending_heading.clear()
 
         def _process_paragraph(para_elm):
-            nonlocal current_page
+            nonlocal current_page, past_first_element
             para = Paragraph(para_elm, document)
             text = para.text.strip()
+
+            # lastRenderedPageBreak يظهر في بداية أول فقرة من الصفحة الجديدة،
+            # لا في نهاية آخر فقرة من الصفحة القديمة. لكن أول عنصر في المستند
+            # قد يحمله قبل أي محتوى — نكشفه ونتجاهله فقط في العنصر الأول.
+            breaks = _count_page_breaks(para_elm)
+            if breaks and past_first_element:
+                current_page += breaks
+            past_first_element = True
 
             # الصور المضمَّنة في هذه الفقرة — تُقرأ في موضعها الحقيقي
             image_texts = _ocr_inline_images(para_elm, document, docx_zip, ocr_fn) if docx_zip else []
@@ -151,13 +170,15 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
             for img_text in image_texts:
                 append_block(img_text)
 
-            breaks = _count_page_breaks(para_elm)
-            if breaks:
-                current_page += breaks
-
         def _process_table(tbl_elm):
             nonlocal current_page
             table = Table(tbl_elm, document)
+
+            # فحص فواصل الصفحات أولاً كما نفعل مع الفقرات
+            breaks = _count_page_breaks(tbl_elm)
+            if breaks:
+                current_page += breaks
+
             flush_pending()
             for row in table.rows:
                 row_text = _row_text(row)
@@ -169,9 +190,6 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
                                 row_text = (row_text + " | " + t) if row_text else t
                 if row_text:
                     append_block(row_text)
-            breaks = _count_page_breaks(tbl_elm)
-            if breaks:
-                current_page += breaks
 
         def _process_sdt(sdt_elm):
             """فك تغليف عناصر التحكم بالمحتوى (Content Controls)."""
@@ -201,7 +219,7 @@ def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
 
         flush_pending()
 
-        return "\n".join(blocks), page_map
+        return "\n".join(blocks), page_map, para_map
 
     except JobCancelled:
         raise

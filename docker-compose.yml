@@ -1,0 +1,27 @@
+services:
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    networks:
+      - waraq-net
+    restart: unless-stopped
+    # Strict isolation: no ports exposed to host or external networks.
+    # Accessible ONLY by the FastAPI container via http://gotenberg:3000
+
+  waraq:
+    build: .
+    ports:
+      - "8000:8000"
+    networks:
+      - waraq-net
+    depends_on:
+      - gotenberg
+    environment:
+      - GOTENBERG_URL=http://gotenberg:3000
+    volumes:
+      - ./storage:/app/storage
+      - ./waraq.db:/app/waraq.db
+    restart: unless-stopped
+
+networks:
+  waraq-net:
+    driver: bridge

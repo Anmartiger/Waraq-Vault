@@ -310,12 +310,13 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
             page_map = None
             para_map = None
 
+            def _page_progress(done, total, label):
+                if paged:
+                    jobs.add_progress(job_id, done=done, total=total, current=f"{name} — {label}")
+                else:
+                    jobs.add_progress(job_id, current=f"{name} — {label}")
+
             if kind == "pdf":
-                def _page_progress(done, total, label):
-                    if paged:
-                        jobs.add_progress(job_id, done=done, total=total, current=f"{name} — {label}")
-                    else:
-                        jobs.add_progress(job_id, current=f"{name} — {label}")
                 pdf_kwargs = {
                     "force_ocr": item["force_ocr"],
                     "pages": item.get("pages"),
@@ -328,15 +329,42 @@ def _process_upload_job(job_id: str, prepared: list, paged: bool):
                     item["bytes"], ocr_engine.run_ocr_boxes, **pdf_kwargs,
                 )
             elif kind == "docx":
-                def _media_progress(done, total, label):
-                    jobs.add_progress(job_id, current=f"{name} — {label}")
-                extracted_text, page_map, para_map = process_docx(
-                    item["bytes"],
-                    force_ocr=item["force_ocr"],
-                    ocr_fn=ocr_engine.run_ocr_boxes if item["force_ocr"] else None,
-                    progress=_media_progress,
-                    is_cancelled=lambda: jobs.is_cancelled(job_id),
-                )
+                if item["force_ocr"]:
+                    # Hybrid / OCR-targeted DOCX: attempt Gotenberg (DOCX→PDF)
+                    # for 100% accurate page/paragraph tracking. If Gotenberg is
+                    # unavailable (dev/testing without Docker), fall back to the
+                    # old inline-OCR path.
+                    try:
+                        from engine.gotenberg_client import convert_docx_to_pdf_sync
+                        pdf_bytes = convert_docx_to_pdf_sync(item["bytes"])
+                        extracted_text, page_map, para_map = process_hybrid_pdf(
+                            pdf_bytes, ocr_engine.run_ocr_boxes,
+                            force_ocr=True,
+                            progress=_page_progress,
+                            is_cancelled=lambda: jobs.is_cancelled(job_id),
+                        )
+                    except RuntimeError:
+                        # Gotenberg unreachable — fall back to inline OCR via python-docx
+                        def _media_progress(done, total, label):
+                            jobs.add_progress(job_id, current=f"{name} — {label}")
+                        extracted_text, page_map, para_map = process_docx(
+                            item["bytes"],
+                            force_ocr=True,
+                            ocr_fn=ocr_engine.run_ocr_boxes,
+                            progress=_media_progress,
+                            is_cancelled=lambda: jobs.is_cancelled(job_id),
+                        )
+                else:
+                    # Text-only DOCX: lightweight python-docx parsing (fast, no OCR)
+                    def _media_progress(done, total, label):
+                        jobs.add_progress(job_id, current=f"{name} — {label}")
+                    extracted_text, page_map, para_map = process_docx(
+                        item["bytes"],
+                        force_ocr=False,
+                        ocr_fn=None,
+                        progress=_media_progress,
+                        is_cancelled=lambda: jobs.is_cancelled(job_id),
+                    )
             elif kind == "txt":
                 extracted_text = process_txt(item["bytes"])
             else:

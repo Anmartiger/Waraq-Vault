@@ -11,6 +11,7 @@ import zipfile
 
 from engine.jobs import JobCancelled
 from engine.textflow import join_ocr
+from engine.gotenberg_client import convert_docx_to_pdf_sync
 
 # أنماط Word التي تُعرِّف العنوان صراحةً — معلومة دقيقة لا تخمين
 _HEADING_STYLES = ("heading", "title", "subtitle", "عنوان")

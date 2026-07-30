@@ -306,12 +306,17 @@ or `"filename"` when the name matches but the contents changed.
 
 | Path | What it is |
 |---|---|
-| [`main.py`](main.py) | FastAPI app: routing, format detection, duplicate checks, the four endpoints |
+| [`main.py`](main.py) | App assembly only: creates the FastAPI app, runs `init_db()` on startup, mounts `ui/` and wires up every router |
+| [`routers/`](routers) | Thin FastAPI route handlers, one file per resource &mdash; `pages`, `system`, `search`, `documents`, `workspaces`, `jobs`, `upload`. No business logic lives here |
+| [`services/upload_pipeline.py`](services/upload_pipeline.py) | The `/upload` business logic: batch validation (fail-fast) and the background job body that extracts, OCRs and indexes each file |
+| [`services/file_detection.py`](services/file_detection.py) | File-kind detection from extension, `Content-Type`, and content magic bytes; the fake-extension guard |
+| [`services/workspace.py`](services/workspace.py) | Workspace-name sanitization |
 | [`engine/database.py`](engine/database.py) | Arabic normalization, FTS5 schema, search, per-line matching, duplicate lookup |
 | [`engine/pdf_engine.py`](engine/pdf_engine.py) | Hybrid PDF extraction, page pre-check, page subsets, OCR fallback per page |
 | [`engine/docx_engine.py`](engine/docx_engine.py) | DOCX extraction in document order, heading merging, embedded-image OCR |
 | [`engine/text_engine.py`](engine/text_engine.py) | Plain-text decoding with Arabic encoding fallbacks |
 | [`engine/ocr_engine.py`](engine/ocr_engine.py) | GPU-detecting EasyOCR reader with CPU fallback (Arabic + English) |
+| [`engine/gotenberg_client.py`](engine/gotenberg_client.py) | Async/sync client for the Gotenberg DOCX&rarr;PDF conversion service |
 | [`engine/jobs.py`](engine/jobs.py) | The background job queue: progress events, cancellation, per-item status |
 | [`ui/js/device.js`](ui/js/device.js) | The hardware selector and the "GPU idle" warning |
 | [`engine/storage.py`](engine/storage.py) | Local copies of uploaded originals, keyed by hash, pruned when unreferenced |
@@ -319,7 +324,7 @@ or `"filename"` when the name matches but the contents changed.
 | [`ui/index.html`](ui/index.html) | The app shell markup, rendered through Jinja2 |
 | [`ui/css/`](ui/css) | `base.css` (dark + light tokens, app grid) and `components.css` (panels, cards, dialogs) |
 | [`ui/js/`](ui/js) | ES modules: `app` (entry), `theme`, `files`, `search`, `upload`, `results`, `modal`, `dom`, `utils` |
-| [`tests/test_regression.py`](tests/test_regression.py) | 93-check end-to-end suite (stubbed OCR, throwaway DB) |
+| [`tests/test_regression.py`](tests/test_regression.py) | 134-check end-to-end suite (stubbed OCR, throwaway DB) |
 | [`docs/plan.md`](docs/plan.md) | The build plan &amp; team roles for the sprint |
 | `storage/waraq.db` | The local SQLite index. Created on first run, and git-ignored &mdash; it is rebuildable |
 
@@ -415,11 +420,12 @@ single-page runs vary by ~20% and English text is not representative.
 - **Never re-sort OCR boxes.** `join_boxes` groups by vertical geometry but preserves the
   engine's original order, because re-sorting by x would silently change Arabic token order &mdash;
   the exact thing the RTL rule above forbids.
-- **Recalibrate the user-facing estimate** in `main.py` (`_EST_SEC_PER_PAGE_CPU = 15.0`,
-  `_EST_SEC_PER_PAGE_GPU = 1.5`) once you have real numbers &mdash; it drives the "~N min" the
-  confirmation dialog promises, and the threshold `_CONFIRM_SCANNED_PAGES = 10`.
+- **Recalibrate the user-facing estimate** in [`services/upload_pipeline.py`](services/upload_pipeline.py)
+  (`_EST_SEC_PER_PAGE_CPU = (15.0, 40.0)`, `_EST_SEC_PER_PAGE_GPU = (1.5, 8.0)`) once you have real
+  numbers &mdash; it drives the "~N min" the confirmation dialog promises, and the threshold
+  `_CONFIRM_SCANNED_PAGES = 5`.
 - **Run the suite before and after**: `.venv/Scripts/python.exe tests/test_regression.py`
-  (93 checks). It stubs `engine.ocr_engine` in `sys.modules`, so it runs in seconds without
+  (134 checks). It stubs `engine.ocr_engine` in `sys.modules`, so it runs in seconds without
   loading any model &mdash; meaning it validates *routing, indexing and search*, not recognition
   quality. Recognition quality is what the benchmark harness is for.
 

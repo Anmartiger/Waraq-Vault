@@ -1,17 +1,14 @@
 from docx import Document
-from docx.document import Document as _Document
 from docx.oxml.ns import qn
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
-from docx.table import Table, _Cell
+from docx.table import Table
 from docx.text.paragraph import Paragraph
 import io
-import os
 import zipfile
 
 from engine.jobs import JobCancelled
 from engine.textflow import join_ocr
-from engine.gotenberg_client import convert_docx_to_pdf_sync
 
 # أنماط Word التي تُعرِّف العنوان صراحةً — معلومة دقيقة لا تخمين
 _HEADING_STYLES = ("heading", "title", "subtitle", "عنوان")
@@ -93,7 +90,7 @@ def _ocr_image_by_rid(rId, document, docx_zip, ocr_fn, texts):
 # ── Main engine ─────────────────────────────────────────────────────────────
 
 def process_docx(file_bytes: bytes, force_ocr: bool = False, ocr_fn=None,
-                 progress=None, is_cancelled=None):
+                 is_cancelled=None):
     """
     يستقبل ملف DOCX كبايتات في الذاكرة ويعيد (النص النظيف، خريطة الصفحات).
 

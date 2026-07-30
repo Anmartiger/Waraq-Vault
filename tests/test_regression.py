@@ -6,7 +6,7 @@ strict short-token matching, language detection and per-format units.
 
 Run:  .venv/Scripts/python.exe tests/test_regression.py   (needs: pip install httpx)
 The real waraq.db is never touched."""
-import sys, os, io, types, time, tempfile, sqlite3, zipfile
+import sys, io, types, time, tempfile, sqlite3, zipfile
 from urllib.parse import unquote
 from pathlib import Path
 
@@ -68,6 +68,7 @@ if TMPSTORE.exists(): _shutil.rmtree(TMPSTORE, ignore_errors=True)
 _storage.STORAGE_DIR = TMPSTORE
 
 import main
+from services import file_detection, upload_pipeline
 from fastapi.testclient import TestClient
 import fitz
 
@@ -101,7 +102,7 @@ def _zip_nondocx():
 client = TestClient(main.app)
 with client:
     print("\n=== P4: detect_kind — extension → content-type → magic/content sniffing ===")
-    dk = main.detect_kind
+    dk = file_detection.detect_kind
     check("pdf by magic, no ext/ctype",  dk("weird", "", b"%PDF-1.7 xx") == "pdf")
     check("png by magic",                dk("noext", "application/octet-stream", PNG) == "image")
     check("jpeg by magic",               dk("noext", "", b"\xff\xd8\xff\xe0junk") == "image")
@@ -185,15 +186,15 @@ with client:
 
     print("\n=== P8: force_ocr flag reaches the PDF engine ===")
     calls = {}
-    orig = main.process_hybrid_pdf
+    orig = upload_pipeline.process_hybrid_pdf
     def spy(pdf_bytes, ocr_fn, force_ocr=False, pages=None, progress=None, is_cancelled=None):
         calls["force_ocr"] = force_ocr
         return orig(pdf_bytes, ocr_fn, force_ocr=force_ocr, pages=pages,
                     progress=progress, is_cancelled=is_cancelled)
-    main.process_hybrid_pdf = spy
+    upload_pipeline.process_hybrid_pdf = spy
     r = upload(client, [("hybrid.pdf", blank_pdf(1), "application/pdf")], force_ocr=True)
     wait_job(client, r.json()["job_id"])
-    main.process_hybrid_pdf = orig
+    upload_pipeline.process_hybrid_pdf = orig
     check("force_ocr=True propagated", calls.get("force_ocr") is True)
 
     print("\n=== Feature: deletion — cascade to FTS, no orphans, 404 on missing ===")
@@ -252,7 +253,7 @@ with client:
     check("mixed doc -> mixed", langs.get("mix.txt") == "mixed", str(langs))
 
     print("\n=== P6: DOCX results are positioned by page only (no paragraph marker) ===")
-    database.insert_document("word.docx", main._DOCX_TYPE, "--- صفحة 1 ---\nفقرة اولى عن الارشيف\nفقرة ثانية", "h-dx")
+    database.insert_document("word.docx", file_detection.DOCX_CONTENT_TYPE, "--- صفحة 1 ---\nفقرة اولى عن الارشيف\nفقرة ثانية", "h-dx")
     hit = next(r_ for r_ in database.search_documents("الارشيف") if r_["filename"] == "word.docx")
     check("docx unit is page (no ¶ counter in the UI)", hit["unit"] == "page", hit["unit"])
     check("docx keeps its page number", hit["matches"][0].get("page") == 1)

@@ -22,8 +22,6 @@ Notes
 
 import argparse
 import difflib
-import io
-import os
 import sys
 import time
 from pathlib import Path
@@ -76,7 +74,7 @@ def similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, na, nb).ratio()
 
 
-def run_config(ocr_engine, pages, label):
+def run_config(ocr_engine, pages):
     """Time OCR over pre-rendered pages and return (seconds, text)."""
     from engine.textflow import smart_join
     chunks = []
@@ -120,7 +118,7 @@ def main():
     print(f"Benchmarking {n} page(s) from {path.name}")
     print(f"Baseline: zoom {args.baseline_zoom} (production default)\n")
 
-    base_secs, base_text = run_config(ocr_engine, base_pages, "baseline")
+    base_secs, base_text = run_config(ocr_engine, base_pages)
     rows = [{
         "config": f"zoom {args.baseline_zoom} (baseline)",
         "render": base_render / n, "ocr": base_secs / n,
@@ -134,7 +132,7 @@ def main():
         t0 = time.perf_counter()
         pages = render_pages(path, z, args.pages)
         render = time.perf_counter() - t0
-        secs, text = run_config(ocr_engine, pages, f"zoom {z}")
+        secs, text = run_config(ocr_engine, pages)
         rows.append({
             "config": f"zoom {z}", "render": render / n, "ocr": secs / n,
             "chars": len(text), "acc": similarity(base_text, text),
@@ -149,7 +147,7 @@ def main():
         original = torch.get_num_threads()
         for t in thread_list:
             torch.set_num_threads(t)
-            secs, text = run_config(ocr_engine, base_pages, f"{t} threads")
+            secs, text = run_config(ocr_engine, base_pages)
             rows.append({
                 "config": f"{t} CPU threads", "render": base_render / n, "ocr": secs / n,
                 "chars": len(text), "acc": similarity(base_text, text),

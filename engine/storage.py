@@ -23,9 +23,9 @@ def save(file_bytes: bytes, file_hash: str, filename: str) -> str:
     path = STORAGE_DIR / stored_name
     if not path.exists():
         # الكتابة إلى ملف مؤقت ثم إعادة التسمية: لا نترك نسخة نصف مكتوبة أبداً
-        tmp = path.with_suffix(path.suffix + ".part")
-        tmp.write_bytes(file_bytes)
-        tmp.replace(path)
+        tmp_path = path.with_suffix(path.suffix + ".part")
+        tmp_path.write_bytes(file_bytes)
+        tmp_path.replace(path)
     return stored_name
 
 def path_for(stored_name: str):

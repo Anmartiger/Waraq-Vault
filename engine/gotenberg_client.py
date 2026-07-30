@@ -12,7 +12,6 @@ Environment:
 
 import os
 import asyncio
-from typing import Optional
 
 import httpx
 
@@ -21,11 +20,6 @@ _GOTENBERG_URL = os.environ.get("GOTENBERG_URL", "http://localhost:3000")
 # Generous timeout: large/complex DOCX files with embedded images may take a while
 # for LibreOffice to render inside the Gotenberg container.
 _CONVERT_TIMEOUT = 120.0  # seconds
-
-
-def get_gotenberg_url() -> str:
-    """Return the configured Gotenberg base URL."""
-    return _GOTENBERG_URL
 
 
 async def convert_docx_to_pdf(docx_bytes: bytes) -> bytes:
@@ -86,13 +80,11 @@ def convert_docx_to_pdf_sync(docx_bytes: bytes) -> bytes:
         The generated PDF as bytes.
     """
     try:
-        # If there's already a running loop in this thread, use it.
-        loop = asyncio.get_running_loop()
-        # We're already inside an async context — delegate to a new thread
-        # to avoid "cannot be called from a running event loop" issues.
+        asyncio.get_running_loop()
+        # A loop is already running in this thread (e.g. FastAPI's event loop),
+        # so asyncio.run() here would raise — delegate to a fresh thread instead.
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(asyncio.run, convert_docx_to_pdf(docx_bytes)).result()
     except RuntimeError:
-        # No running loop — we're in a plain thread. Create one.
         return asyncio.run(convert_docx_to_pdf(docx_bytes))

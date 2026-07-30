@@ -124,6 +124,27 @@ On Linux/macOS use `.venv/bin/python` instead of `.venv/Scripts/python.exe`.
 **The first run needs internet** &mdash; EasyOCR downloads its Arabic/English models (a few hundred
 MB) before the server reports `Uvicorn running`. After that, the app is fully offline.
 
+### Docker (alternative to the venv setup)
+
+The repo also ships a `Dockerfile` and `docker-compose.yml` that run WaraqVault alongside
+**Gotenberg** (used for DOCX&rarr;PDF conversion) in an isolated network, with no manual Python
+setup:
+
+```bash
+docker compose up --build
+```
+
+Then open **<http://127.0.0.1:8000>**. A few things worth knowing:
+
+- **`storage/`** is bind-mounted from the host (`./storage:/app/storage`), so your indexed
+  originals and the SQLite index (`storage/waraq.db`) survive `docker compose down` and rebuilds.
+- **EasyOCR's downloaded models** live in a named volume (`easyocr-models`), so the first-run
+  download only happens once, not on every rebuild.
+- Gotenberg has no ports exposed to the host &mdash; it's reachable only from the `waraq` container
+  over the internal `waraq-net` network, at `http://gotenberg:3000`.
+- GPU passthrough isn't wired up in `docker-compose.yml` by default; inside the container OCR
+  runs on CPU. For GPU-accelerated OCR, run the native venv setup above instead.
+
 ### Enabling the GPU (NVIDIA)
 
 OCR runs **10–30× faster** on a CUDA GPU, and the app picks one up automatically. The catch is
@@ -300,7 +321,7 @@ or `"filename"` when the name matches but the contents changed.
 | [`ui/js/`](ui/js) | ES modules: `app` (entry), `theme`, `files`, `search`, `upload`, `results`, `modal`, `dom`, `utils` |
 | [`tests/test_regression.py`](tests/test_regression.py) | 93-check end-to-end suite (stubbed OCR, throwaway DB) |
 | [`docs/plan.md`](docs/plan.md) | The build plan &amp; team roles for the sprint |
-| `waraq.db` | The local SQLite index. Created on first run, and git-ignored &mdash; it is rebuildable |
+| `storage/waraq.db` | The local SQLite index. Created on first run, and git-ignored &mdash; it is rebuildable |
 
 ## Notes &amp; troubleshooting
 
@@ -317,9 +338,9 @@ or `"filename"` when the name matches but the contents changed.
 - **Re-indexing.** Text is extracted once at upload time, so changes to an extraction engine only
   affect documents uploaded afterwards. Re-upload and choose *Overwrite* to refresh one.
 - **Upgrading is safe.** New columns are added by in-place `ALTER TABLE` migrations on startup —
-  you never need to delete `waraq.db` to pick up a new version. Documents indexed by older
+  you never need to delete `storage/waraq.db` to pick up a new version. Documents indexed by older
   versions keep working, including their page numbers.
-- **Starting over.** Stop the server and delete `waraq.db`; it is rebuilt empty on the next run.
+- **Starting over.** Stop the server and delete `storage/waraq.db`; it is rebuilt empty on the next run.
 - **DOCX page numbers** come from the pagination Word recorded when it last saved the file. A
   document written by another tool, with no page breaks of its own, shows line numbers only &mdash;
   deliberately, rather than guessing a page and sending you to the wrong place.
@@ -405,7 +426,7 @@ single-page runs vary by ~20% and English text is not representative.
 ## Privacy
 
 Documents are read, indexed and searched entirely on your machine. Extracted text lives in the local
-`waraq.db`, and a **copy of each uploaded original is kept in `storage/`** so you can open it again
+`storage/waraq.db`, and a **copy of each uploaded original is kept in `storage/`** so you can open it again
 from the app — both are git-ignored and never leave your computer. Your original file, wherever you
 keep it, is never moved or altered. The only network access the project ever needs is the one-time
 OCR model download during setup.

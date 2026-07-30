@@ -5,8 +5,8 @@ from pathlib import Path
 
 from engine.textflow import page_for_line, para_for_line
 
-# تحديد مسار قاعدة البيانات لتكون في الجذر الرئيسي للمشروع
-DB_PATH = Path(__file__).resolve().parent.parent / "waraq.db"
+# تحديد مسار قاعدة البيانات داخل مجلد storage/ (يبقى ملفاً حقيقياً حتى مع bind mount فارغ)
+DB_PATH = Path(__file__).resolve().parent.parent / "storage" / "waraq.db"
 
 # خوارزمية النمر لتطبيع النصوص العربية (إزالة التشكيل وتوحيد الحروف)
 _MARKS = re.compile("[ـً-ٰٟۖ-ۭ]")
@@ -26,6 +26,7 @@ def normalize(text: str) -> str:
 
 def init_db():
     """تهيئة قاعدة البيانات وبناء جداول FTS5 إذا لم تكن موجودة"""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     con.executescript("""
         CREATE TABLE IF NOT EXISTS documents (

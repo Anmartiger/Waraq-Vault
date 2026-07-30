@@ -19,9 +19,12 @@ services:
       - GOTENBERG_URL=http://gotenberg:3000
     volumes:
       - ./storage:/app/storage
-      - ./waraq.db:/app/waraq.db
+      - easyocr-models:/root/.EasyOCR
     restart: unless-stopped
 
 networks:
   waraq-net:
     driver: bridge
+
+volumes:
+  easyocr-models:

@@ -55,7 +55,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $p = Start-Process msiexec.exe -ArgumentList "/i `"$env:RUNNER_TEMP\libreoffice.msi`" /qn /norestart" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "LibreOffice install failed with exit code $($p.ExitCode)" }
+          # 3010 = ERROR_SUCCESS_REBOOT_REQUIRED — the install itself succeeded, a component
+          # just wants a reboot we don't need on a throwaway CI VM. Only treat other codes as fatal.
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { throw "LibreOffice install failed with exit code $($p.ExitCode)" }
 
       - name: Harvest LibreOffice program files
         shell: pwsh

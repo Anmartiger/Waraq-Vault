@@ -107,33 +107,53 @@ def _device_label(on_gpu: bool) -> str:
         return f"GPU ({GPU_NAME})" if GPU_NAME else "GPU"
     return f"CPU ({_CPU_THREADS} threads)"
 
-logger.info("⏳ جاري تحميل نماذج EasyOCR في الذاكرة...")
-if NVIDIA["present"]:
-    logger.info(f"🖥️ NVIDIA detected: {NVIDIA['name']} ({NVIDIA['memory']}, driver {NVIDIA['driver']})")
-if not GPU_AVAILABLE:
-    _apply_cpu_threads()
-    if GPU_REASON:
-        logger.warning(f"⚠️ {GPU_REASON}")
-        if NVIDIA["present"] and not TORCH["built_with_cuda"]:
-            logger.warning(f"👉 {_cuda_install_hint()}")
-
-# وضع التحميل العام هنا قرار ذكي جداً للهاكاثون لتجنب خنق الذاكرة (Memory Leak).
-try:
-    reader = _make_reader(GPU_AVAILABLE)
-except Exception as e:
-    if GPU_AVAILABLE:
-        # بطاقة موجودة لكن التهيئة فشلت (تعريفات ناقصة، ذاكرة ممتلئة...) → CPU بدون انهيار
-        logger.error(f"❌ GPU init failed, retrying on CPU: {e}")
-        GPU_AVAILABLE = False
-        GPU_REASON = f"فشلت تهيئة البطاقة: {e}"
-        _apply_cpu_threads()
-        reader = _make_reader(False)
-    else:
-        raise
-
+reader = None
 ACTIVE_GPU = GPU_AVAILABLE
 OCR_DEVICE = _device_label(ACTIVE_GPU)
-logger.info(f"✅ OCR engine ready on {OCR_DEVICE}")
+
+def _ensure_reader():
+    """
+    يبني قارئ EasyOCR عند أول استخدام فعلي فقط، بدل وقت استيراد الوحدة.
+    كان البناء يجري مباشرة عند الاستيراد فيحجب إقلاع uvicorn بالكامل ريثما
+    يكتمل تحميل/تنزيل النماذج (قد يستغرق دقائق على جهاز جديد) — ما يتجاوز
+    مهلة استعداد غلاف Tauri لسطح المكتب فيظهر خطأ "تعذّر تشغيل الخادم" رغم
+    أن الخادم كان لا يزال يُقلع فعلياً. التأجيل هنا يجعل /status يستجيب فوراً.
+    """
+    global reader, ACTIVE_GPU, OCR_DEVICE, GPU_AVAILABLE, GPU_REASON
+    if reader is not None:
+        return
+    with _reader_lock:
+        if reader is not None:
+            return
+        logger.info("⏳ جاري تحميل نماذج EasyOCR في الذاكرة...")
+        if NVIDIA["present"]:
+            logger.info(f"🖥️ NVIDIA detected: {NVIDIA['name']} ({NVIDIA['memory']}, driver {NVIDIA['driver']})")
+        if not GPU_AVAILABLE:
+            _apply_cpu_threads()
+            if GPU_REASON:
+                logger.warning(f"⚠️ {GPU_REASON}")
+                if NVIDIA["present"] and not TORCH["built_with_cuda"]:
+                    logger.warning(f"👉 {_cuda_install_hint()}")
+
+        try:
+            built = _make_reader(GPU_AVAILABLE)
+            active_gpu = GPU_AVAILABLE
+        except Exception as e:
+            if GPU_AVAILABLE:
+                # بطاقة موجودة لكن التهيئة فشلت (تعريفات ناقصة، ذاكرة ممتلئة...) → CPU بدون انهيار
+                logger.error(f"❌ GPU init failed, retrying on CPU: {e}")
+                GPU_AVAILABLE = False
+                GPU_REASON = f"فشلت تهيئة البطاقة: {e}"
+                _apply_cpu_threads()
+                built = _make_reader(False)
+                active_gpu = False
+            else:
+                raise
+
+        reader = built
+        ACTIVE_GPU = active_gpu
+        OCR_DEVICE = _device_label(active_gpu)
+        logger.info(f"✅ OCR engine ready on {OCR_DEVICE}")
 
 def device_status() -> dict:
     """كل ما تحتاجه الواجهة لعرض حالة العتاد والسماح باختياره."""
@@ -164,6 +184,12 @@ def set_device(mode: str) -> dict:
     mode = (mode or "auto").lower()
     if mode not in ("auto", "gpu", "cpu"):
         raise ValueError("الوضع المسموح: auto أو gpu أو cpu")
+
+    # يضمن بناء القارئ أولاً حتى يعكس GPU_AVAILABLE نتيجة تهيئة فعلية مؤكدة
+    # لا مجرد فحص مبدئي (torch.cuda.is_available() قد يعد بالبطاقة ثم تفشل
+    # التهيئة الفعلية لاحقاً).
+    _ensure_reader()
+
     if mode == "gpu" and not GPU_AVAILABLE:
         raise ValueError(GPU_REASON or "البطاقة غير متاحة على هذا الجهاز.")
 
@@ -190,6 +216,7 @@ def _read(image, detail: int):
     لا انهيار ولا فقدان بيانات.
     """
     global reader, ACTIVE_GPU, OCR_DEVICE
+    _ensure_reader()
     with _reader_lock:
         current = reader
     try:

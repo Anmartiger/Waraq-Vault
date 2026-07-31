@@ -116,7 +116,8 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
 
 fn stop_backend(app: &tauri::AppHandle) {
     let state: State<BackendProcess> = app.state();
-    if let Some(mut child) = state.0.lock().unwrap().take() {
+    let child = state.0.lock().unwrap().take();
+    if let Some(mut child) = child {
         let _ = child.kill();
         let _ = child.wait();
     }

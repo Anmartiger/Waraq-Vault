@@ -24,6 +24,12 @@ async def system_status():
     }
 
 
+@router.get("/ocr/progress")
+async def ocr_progress():
+    """تقدّم تجهيز محرك OCR (تنزيل/تحميل النماذج) — لا يُطلق البناء بنفسه أبداً."""
+    return ocr_engine.load_progress()
+
+
 @router.get("/device")
 async def get_device():
     """حالة العتاد: أي جهاز يعمل الآن، وهل توجد بطاقة، ولماذا لا تُستخدم إن وُجدت."""

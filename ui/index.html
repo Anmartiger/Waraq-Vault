@@ -83,6 +83,16 @@ try { document.documentElement.dataset.theme = localStorage.getItem("waraq-theme
   </aside>
 
   <main class="maincol">
+    <div id="ocr-setup" class="progress ocr-setup" hidden>
+      <div class="progress-top">
+        <span id="ocr-setup-label" data-i18n="ocr-setup-loading">Loading the OCR engine into memory…</span>
+      </div>
+      <div class="progress-track"><div id="ocr-setup-bar" class="progress-fill indet"></div></div>
+      <div class="ocr-setup-note" data-i18n="ocr-setup-note">
+        First run only — requires an internet connection to download the OCR language models.
+      </div>
+    </div>
+
     <div id="drop" class="uploader" role="button" tabindex="0" aria-label="Upload documents">
       <input id="file" type="file" accept="image/*,application/pdf,.pdf,.docx,.txt" multiple hidden />
       <div class="up-icon">⬆️</div>

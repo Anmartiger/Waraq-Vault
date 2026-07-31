@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from engine.database import init_db
 from engine.paths import app_dir
+from engine.ocr_engine import start_background_load
 from routers import documents, jobs, pages, search, system, upload, workspaces
 
 
@@ -13,6 +14,9 @@ from routers import documents, jobs, pages, search, system, upload, workspaces
 async def lifespan(app: FastAPI):
     # تهيئة قاعدة البيانات وبناء جداول FTS5 فور إقلاع الخادم
     init_db()
+    # يبدأ تنزيل/تحميل نماذج OCR في الخلفية فور الإقلاع بدل انتظار أول رفعة —
+    # لا يحجب استعداد الخادم (انظر engine/ocr_engine.py لتفاصيل السبب)
+    start_background_load()
     yield
 
 app = FastAPI(title="WaraqVault API", lifespan=lifespan)

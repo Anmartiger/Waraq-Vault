@@ -103,6 +103,13 @@ var dict = {
     "status-device-switched": "OCR now running on %1.",
     "status-device-failed": "Device switch failed: %1",
 
+    // \u2500\u2500 OCR first-run setup \u2500\u2500
+    "ocr-setup-note": "First run only \u2014 requires an internet connection to download the OCR language models. Keep the app open until this finishes.",
+    "ocr-setup-downloading": "Downloading OCR language models\u2026 %1%",
+    "ocr-setup-downloading-indet": "Downloading OCR language models\u2026",
+    "ocr-setup-loading": "Loading the OCR engine into memory\u2026",
+    "ocr-setup-error": "Couldn\u2019t set up the OCR engine: %1",
+
     // ── details panel ──
     "details-heading": "Details",
     "det-type": "Type",
@@ -274,6 +281,13 @@ var dict = {
     "status-device-switching": "جاري تبديل OCR إلى %1 — إعادة تحميل النماذج\u2026",
     "status-device-switched": "OCR يعمل الآن على %1.",
     "status-device-failed": "فشل تبديل الجهاز: %1",
+
+    // ── OCR first-run setup ──
+    "ocr-setup-note": "أول تشغيل فقط — يتطلب اتصالاً بالإنترنت لتنزيل نماذج OCR اللغوية. أبقِ التطبيق مفتوحاً حتى الانتهاء.",
+    "ocr-setup-downloading": "جاري تنزيل نماذج OCR اللغوية… %1٪",
+    "ocr-setup-downloading-indet": "جاري تنزيل نماذج OCR اللغوية…",
+    "ocr-setup-loading": "جاري تحميل محرك OCR في الذاكرة…",
+    "ocr-setup-error": "تعذّر تجهيز محرك OCR: %1",
 
     // ── details panel ──
     "details-heading": "التفاصيل",

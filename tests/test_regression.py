@@ -52,6 +52,8 @@ def _set_device(mode):
         raise ValueError("PyTorch build has no CUDA support.")
     st = fake.device_status(); st["mode"] = mode; return st
 fake.set_device = _set_device
+fake.start_background_load = lambda: None
+fake.load_progress = lambda: {"phase": "ready", "percent": 100.0, "message": ""}
 
 sys.modules["engine.ocr_engine"] = fake
 

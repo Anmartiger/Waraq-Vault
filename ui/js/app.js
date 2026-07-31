@@ -11,6 +11,7 @@ import { initUpload, openPicker } from "./upload.js";
 import { initShowMore } from "./results.js";
 import { initFiles } from "./files.js";
 import { initDevice } from "./device.js";
+import { initOcrSetup } from "./ocrsetup.js";
 import { initI18n, setLang, getLang, t } from "./i18n.js";
 
 function initLang() {
@@ -58,6 +59,7 @@ initUpload();
 initShowMore();
 initFiles();
 initDevice();
+initOcrSetup();
 
 showEmpty(t("empty-start"));
 

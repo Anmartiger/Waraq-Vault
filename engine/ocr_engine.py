@@ -100,7 +100,10 @@ def _apply_cpu_threads():
         pass
 
 def _make_reader(use_gpu: bool):
-    return easyocr.Reader(['ar', 'en'], gpu=use_gpu, verbose=False)
+    # verbose=True so easyocr attaches its download reporthook, which
+    # _ensure_reader() temporarily swaps for _download_progress_hook_factory
+    # to surface real progress instead of printing to a console nobody sees.
+    return easyocr.Reader(['ar', 'en'], gpu=use_gpu, verbose=True)
 
 def _device_label(on_gpu: bool) -> str:
     if on_gpu:
@@ -110,6 +113,34 @@ def _device_label(on_gpu: bool) -> str:
 reader = None
 ACTIVE_GPU = GPU_AVAILABLE
 OCR_DEVICE = _device_label(ACTIVE_GPU)
+
+_load_state_lock = threading.Lock()
+_load_state = {"phase": "pending", "percent": None, "message": ""}
+
+def _set_load_state(phase, percent=None, message=""):
+    with _load_state_lock:
+        _load_state["phase"] = phase
+        _load_state["percent"] = percent
+        _load_state["message"] = message
+
+def load_progress() -> dict:
+    """لقطة من حالة تجهيز محرك OCR — آمنة للاستطلاع المتكرر من الواجهة."""
+    with _load_state_lock:
+        return dict(_load_state)
+
+def _download_progress_hook_factory(prefix="", suffix="", decimals=1, length=100, fill="█"):
+    """
+    بديل عن easyocr.utils.printProgressBar يُستدعى بنفس التوقيع تماماً (تُستدعى
+    عبر download_and_unzip الداخلية في مكتبة easyocr)، لكنه يحدّث حالتنا بدل
+    الطباعة على الطرفية — هذا ما يمنحنا نسبة تنزيل حقيقية بدل مؤشر غامض.
+    """
+    def _hook(count, block_size, total_size):
+        try:
+            pct = min(100.0, round(count * block_size / total_size * 100, 1)) if total_size else None
+        except ZeroDivisionError:
+            pct = None
+        _set_load_state("downloading", pct)
+    return _hook
 
 def _ensure_reader():
     """
@@ -126,6 +157,7 @@ def _ensure_reader():
         if reader is not None:
             return
         logger.info("⏳ جاري تحميل نماذج EasyOCR في الذاكرة...")
+        _set_load_state("loading")
         if NVIDIA["present"]:
             logger.info(f"🖥️ NVIDIA detected: {NVIDIA['name']} ({NVIDIA['memory']}, driver {NVIDIA['driver']})")
         if not GPU_AVAILABLE:
@@ -135,25 +167,48 @@ def _ensure_reader():
                 if NVIDIA["present"] and not TORCH["built_with_cuda"]:
                     logger.warning(f"👉 {_cuda_install_hint()}")
 
+        # يعترض تقرير تقدّم easyocr الداخلي (مُعطَّل أصلاً لأننا نبني بـ verbose=False)
+        # ليحدّث حالتنا بدل الطباعة — لا يفعل شيئاً إن كانت النماذج محمّلة مسبقاً على
+        # القرص، لأن download_and_unzip لا يُستدعى إطلاقاً في تلك الحالة.
+        import easyocr.utils as _eo_utils
+        _original_progress_bar = _eo_utils.printProgressBar
+        _eo_utils.printProgressBar = _download_progress_hook_factory
         try:
-            built = _make_reader(GPU_AVAILABLE)
-            active_gpu = GPU_AVAILABLE
-        except Exception as e:
-            if GPU_AVAILABLE:
-                # بطاقة موجودة لكن التهيئة فشلت (تعريفات ناقصة، ذاكرة ممتلئة...) → CPU بدون انهيار
-                logger.error(f"❌ GPU init failed, retrying on CPU: {e}")
-                GPU_AVAILABLE = False
-                GPU_REASON = f"فشلت تهيئة البطاقة: {e}"
-                _apply_cpu_threads()
-                built = _make_reader(False)
-                active_gpu = False
-            else:
+            try:
+                try:
+                    built = _make_reader(GPU_AVAILABLE)
+                    active_gpu = GPU_AVAILABLE
+                except Exception as e:
+                    if GPU_AVAILABLE:
+                        # بطاقة موجودة لكن التهيئة فشلت (تعريفات ناقصة، ذاكرة ممتلئة...) → CPU بدون انهيار
+                        logger.error(f"❌ GPU init failed, retrying on CPU: {e}")
+                        GPU_AVAILABLE = False
+                        GPU_REASON = f"فشلت تهيئة البطاقة: {e}"
+                        _apply_cpu_threads()
+                        _set_load_state("loading")
+                        built = _make_reader(False)
+                        active_gpu = False
+                    else:
+                        raise
+            except Exception as e:
+                _set_load_state("error", None, str(e))
                 raise
+        finally:
+            _eo_utils.printProgressBar = _original_progress_bar
 
         reader = built
         ACTIVE_GPU = active_gpu
         OCR_DEVICE = _device_label(active_gpu)
+        _set_load_state("ready", 100.0)
         logger.info(f"✅ OCR engine ready on {OCR_DEVICE}")
+
+def start_background_load():
+    """
+    يبدأ تجهيز محرك OCR في خيط خلفي فور إقلاع الخادم بدل الانتظار حتى أول
+    استخدام فعلي — بذلك يبدأ التنزيل فور فتح التطبيق، ويستطيع المستخدم متابعة
+    تقدّمه عبر /ocr/progress، بدل أن يُفاجَأ بتأخر أول رفعة مستند.
+    """
+    threading.Thread(target=_ensure_reader, daemon=True).start()
 
 def device_status() -> dict:
     """كل ما تحتاجه الواجهة لعرض حالة العتاد والسماح باختياره."""

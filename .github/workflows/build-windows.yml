@@ -10,7 +10,7 @@ env:
   # Bump periodically — check https://www.libreoffice.org/download/download/ for
   # the current stable release. Pinned (rather than "latest") so builds are
   # reproducible; TDF keeps old version directories around after new releases.
-  LIBREOFFICE_VERSION: "24.8.4"
+  LIBREOFFICE_VERSION: "26.2.5"
 
 jobs:
   build:

@@ -1,12 +1,12 @@
 import sqlite3
 import re
 import json
-from pathlib import Path
 
+from engine.paths import data_dir
 from engine.textflow import page_for_line, para_for_line
 
 # تحديد مسار قاعدة البيانات داخل مجلد storage/ (يبقى ملفاً حقيقياً حتى مع bind mount فارغ)
-DB_PATH = Path(__file__).resolve().parent.parent / "storage" / "waraq.db"
+DB_PATH = data_dir() / "waraq.db"
 
 # خوارزمية النمر لتطبيع النصوص العربية (إزالة التشكيل وتوحيد الحروف)
 _MARKS = re.compile("[ـً-ٰٟۖ-ۭ]")

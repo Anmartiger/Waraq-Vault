@@ -145,6 +145,44 @@ Then open **<http://127.0.0.1:8000>**. A few things worth knowing:
 - GPU passthrough isn't wired up in `docker-compose.yml` by default; inside the container OCR
   runs on CPU. For GPU-accelerated OCR, run the native venv setup above instead.
 
+### Desktop installer (Windows .msi / .exe)
+
+WaraqVault can also ship as a self-contained Windows desktop app, built with
+[Tauri](https://tauri.app). The Tauri shell spawns the FastAPI backend (frozen into a standalone
+executable with PyInstaller) as a background process, waits for it to report ready, then opens a
+window pointed at it &mdash; same app, no browser, no manual setup, no internet required after
+install (EasyOCR's first-run model download still needs one).
+
+Because Gotenberg is Docker-only, the desktop build swaps it for a bundled portable LibreOffice
+and does DOCX&rarr;PDF conversion by shelling out to `soffice --headless` directly
+(`engine/libreoffice_client.py`, selected via `PDF_ENGINE=libreoffice`) instead of talking to a
+Gotenberg container. `engine/paths.py` is what makes the same codebase work unmodified whether
+it's running from source, frozen, or in Docker &mdash; it resolves the bundled `ui/` folder and a
+writable per-user data directory correctly in each case.
+
+**Building it:**
+
+- **CI (recommended)** &mdash; push a `v*.*.*` tag, or trigger `.github/workflows/build-windows.yml`
+  manually from the Actions tab. It freezes the backend, silently installs and harvests
+  LibreOffice, and runs `cargo tauri build` on a `windows-latest` runner, producing both a
+  WiX `.msi` and an NSIS `.exe` as workflow artifacts.
+- **Locally on Windows** &mdash; you'll need Rust (`cargo install tauri-cli --version "^2"`) and a
+  Python 3.12 venv with `requirements.txt` + `requirements-desktop.txt` installed:
+
+  ```powershell
+  pyinstaller --noconfirm waraq-backend.spec
+  # copy dist\waraq-backend into src-tauri\backend\waraq-backend
+  # copy an installed LibreOffice's Program Files tree into src-tauri\libreoffice
+  cargo tauri build
+  ```
+
+  Installers land in `src-tauri/target/release/bundle/{msi,nsis}/`. Without the LibreOffice
+  resources present, the app still runs — DOCX&rarr;PDF conversion just falls back to the
+  inline-OCR path instead of failing.
+
+The backend binds a fixed local port (`47861`); if that's ever occupied by a leftover process,
+the splash screen reports a startup failure instead of hanging.
+
 ### Enabling the GPU (NVIDIA)
 
 OCR runs **10–30× faster** on a CUDA GPU, and the app picks one up automatically. The catch is
@@ -316,8 +354,14 @@ or `"filename"` when the name matches but the contents changed.
 | [`engine/docx_engine.py`](engine/docx_engine.py) | DOCX extraction in document order, heading merging, embedded-image OCR |
 | [`engine/text_engine.py`](engine/text_engine.py) | Plain-text decoding with Arabic encoding fallbacks |
 | [`engine/ocr_engine.py`](engine/ocr_engine.py) | GPU-detecting EasyOCR reader with CPU fallback (Arabic + English) |
-| [`engine/gotenberg_client.py`](engine/gotenberg_client.py) | Async/sync client for the Gotenberg DOCX&rarr;PDF conversion service |
+| [`engine/gotenberg_client.py`](engine/gotenberg_client.py) | Async/sync client for the Gotenberg DOCX&rarr;PDF conversion service (Docker deployments) |
+| [`engine/libreoffice_client.py`](engine/libreoffice_client.py) | Same DOCX&rarr;PDF job via a local headless `soffice` (desktop build) |
+| [`engine/pdf_conversion.py`](engine/pdf_conversion.py) | Picks Gotenberg vs. local LibreOffice via `PDF_ENGINE` |
+| [`engine/paths.py`](engine/paths.py) | Resolves the bundled `ui/` dir and a writable data dir across source/frozen/Docker runs |
 | [`engine/jobs.py`](engine/jobs.py) | The background job queue: progress events, cancellation, per-item status |
+| [`desktop_main.py`](desktop_main.py) | Entry point for the PyInstaller-frozen desktop build (no autoreload, configurable port) |
+| [`waraq-backend.spec`](waraq-backend.spec) | PyInstaller spec that freezes the backend for the Tauri sidecar |
+| [`src-tauri/`](src-tauri) | The Tauri desktop shell &mdash; spawns the backend, waits for it, opens a window on it |
 | [`ui/js/device.js`](ui/js/device.js) | The hardware selector and the "GPU idle" warning |
 | [`engine/storage.py`](engine/storage.py) | Local copies of uploaded originals, keyed by hash, pruned when unreferenced |
 | [`engine/textflow.py`](engine/textflow.py) | Smart OCR line merging and page-map lookup, shared by all engines |

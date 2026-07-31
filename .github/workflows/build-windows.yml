@@ -1,0 +1,83 @@
+name: Build Windows installers
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  # Bump periodically — check https://www.libreoffice.org/download/download/ for
+  # the current stable release. Pinned (rather than "latest") so builds are
+  # reproducible; TDF keeps old version directories around after new releases.
+  LIBREOFFICE_VERSION: "24.8.4"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install backend dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-desktop.txt
+
+      - name: Freeze backend with PyInstaller
+        run: pyinstaller --noconfirm waraq-backend.spec
+
+      - name: Stage backend into Tauri resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "src-tauri\backend" | Out-Null
+          Copy-Item -Path "dist\waraq-backend" -Destination "src-tauri\backend\waraq-backend" -Recurse -Force
+
+      - name: Download LibreOffice installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://download.documentfoundation.org/libreoffice/stable/$env:LIBREOFFICE_VERSION/win/x86_64/LibreOffice_${env:LIBREOFFICE_VERSION}_Win_x86-64.msi"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\libreoffice.msi"
+
+      - name: Install LibreOffice silently
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $p = Start-Process msiexec.exe -ArgumentList "/i `"$env:RUNNER_TEMP\libreoffice.msi`" /qn /norestart" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "LibreOffice install failed with exit code $($p.ExitCode)" }
+
+      - name: Harvest LibreOffice program files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "src-tauri\libreoffice" | Out-Null
+          Copy-Item -Path "C:\Program Files\LibreOffice\*" -Destination "src-tauri\libreoffice" -Recurse -Force
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build Tauri app (.msi + .exe)
+        run: cargo tauri build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: waraq-vault-windows-installers
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe

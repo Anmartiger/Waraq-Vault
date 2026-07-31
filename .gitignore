@@ -26,3 +26,11 @@ testdocs/
 
 # stored copies of uploaded originals (rebuildable by re-uploading)
 storage/
+
+# PyInstaller build output (desktop backend sidecar)
+/build/
+/dist/
+
+# Tauri updater signing keypair — never commit
+key.txt
+key.txt.pub

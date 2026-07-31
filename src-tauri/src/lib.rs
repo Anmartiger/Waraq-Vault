@@ -1,0 +1,157 @@
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use tauri::{Manager, State};
+
+// Fixed local port for the bundled FastAPI backend. Simple and good enough
+// for a single-instance desktop app; a stray leftover process holding this
+// port is the one scenario that surfaces as a startup error to the user.
+const BACKEND_PORT: u16 = 47861;
+const READY_TIMEOUT_SECS: u64 = 90; // first run can be slower (EasyOCR model download)
+
+struct BackendProcess(Mutex<Option<Child>>);
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .manage(BackendProcess(Mutex::new(None)))
+        .setup(|app| {
+            if cfg!(debug_assertions) {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .build(),
+                )?;
+            }
+
+            spawn_backend(app.handle())?;
+
+            let handle = app.handle().clone();
+            std::thread::spawn(move || wait_for_backend_then_show(handle));
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                stop_backend(window.app_handle());
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+/// Finds the bundled backend/LibreOffice under `resource_dir` first (installed
+/// app), then falls back to `dist/waraq-backend` next to the project during
+/// `cargo tauri dev` on this machine so the whole flow can be smoke-tested
+/// without a full installer build.
+fn locate(resource_dir: &Path, dev_fallback: &Path, candidates: &[&str]) -> Option<PathBuf> {
+    for base in [resource_dir, dev_fallback] {
+        for rel in candidates {
+            let path = base.join(rel);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn spawn_backend(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let resource_dir = app.path().resource_dir()?;
+    let data_dir = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&data_dir)?;
+
+    // Only used for local `cargo tauri dev` iteration on this machine — the
+    // installed app always resolves everything under resource_dir.
+    let project_root = resource_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| resource_dir.clone());
+
+    let backend_exe = locate(
+        &resource_dir,
+        &project_root,
+        &[
+            "backend/waraq-backend/waraq-backend.exe",
+            "backend/waraq-backend/waraq-backend",
+            "dist/waraq-backend/waraq-backend.exe",
+            "dist/waraq-backend/waraq-backend",
+        ],
+    )
+    .ok_or("backend executable not found in app resources")?;
+
+    let soffice = locate(
+        &resource_dir,
+        &project_root,
+        &["libreoffice/program/soffice.exe", "libreoffice/program/soffice"],
+    );
+
+    let mut cmd = Command::new(&backend_exe);
+    cmd.env("WARAQ_PORT", BACKEND_PORT.to_string())
+        .env("WARAQ_DATA_DIR", &data_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Some(soffice_path) = soffice {
+        cmd.env("SOFFICE_PATH", soffice_path);
+        cmd.env("PDF_ENGINE", "libreoffice");
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let child = cmd.spawn().map_err(|e| format!("failed to start backend: {e}"))?;
+
+    let state: State<BackendProcess> = app.state();
+    *state.0.lock().unwrap() = Some(child);
+    Ok(())
+}
+
+fn stop_backend(app: &tauri::AppHandle) {
+    let state: State<BackendProcess> = app.state();
+    if let Some(mut child) = state.0.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// Polls the backend's own health endpoint (blocking, on a plain thread —
+/// simpler than pulling in async plumbing for one readiness loop) and either
+/// navigates the splash window to the running app or reports a failure.
+fn wait_for_backend_then_show(app: tauri::AppHandle) {
+    let status_url = format!("http://127.0.0.1:{BACKEND_PORT}/status");
+    let deadline = Instant::now() + Duration::from_secs(READY_TIMEOUT_SECS);
+
+    let ready = loop {
+        if let Ok(resp) = ureq::get(&status_url).timeout(Duration::from_secs(2)).call() {
+            if resp.status() == 200 {
+                break true;
+            }
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    };
+
+    let Some(window) = app.get_webview_window("main") else { return };
+
+    if ready {
+        if let Ok(url) = url::Url::parse(&format!("http://127.0.0.1:{BACKEND_PORT}/")) {
+            let _ = window.navigate(url);
+        }
+    } else {
+        let _ = window.eval(
+            "document.getElementById('error').style.display='block';\
+             document.getElementById('error').textContent = \
+             'تعذّر تشغيل الخادم المحلي. أغلق التطبيق وأعد فتحه، وتأكد من عدم وجود نسخة أخرى قيد التشغيل.';",
+        );
+    }
+}

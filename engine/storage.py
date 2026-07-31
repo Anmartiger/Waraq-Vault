@@ -6,9 +6,10 @@
 """
 
 import os
-from pathlib import Path
 
-STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
+from engine.paths import data_dir
+
+STORAGE_DIR = data_dir()
 
 # امتدادات نسمح بها في اسم النسخة المحفوظة (الاسم الحقيقي يبقى في قاعدة البيانات)
 _MAX_EXT = 12

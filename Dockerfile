@@ -19,6 +19,7 @@ COPY . .
 
 # Default Gotenberg URL — override via docker-compose environment
 ENV GOTENBERG_URL=http://gotenberg:3000
+ENV PDF_ENGINE=gotenberg
 
 EXPOSE 8000
 

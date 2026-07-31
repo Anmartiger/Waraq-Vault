@@ -43,12 +43,30 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $url = "https://download.documentfoundation.org/libreoffice/stable/$env:LIBREOFFICE_VERSION/win/x86_64/LibreOffice_${env:LIBREOFFICE_VERSION}_Win_x86-64.msi"
-          # TDF's download host (MirrorBrain) round-robins across third-party mirrors, and a
-          # freshly-released version isn't synced to all of them yet — a transient 404 from a
-          # stale mirror is expected, not a broken URL. Retry: each attempt gets reassigned to a
-          # (likely different) mirror, so a bad pick self-heals within a few tries.
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\libreoffice.msi" -MaximumRetryCount 5 -RetryIntervalSec 10
+          $rel = "$env:LIBREOFFICE_VERSION/win/x86_64/LibreOffice_${env:LIBREOFFICE_VERSION}_Win_x86-64.msi"
+          # download.documentfoundation.org (MirrorBrain) picks a mirror by the requester's
+          # GeoIP — for GitHub-hosted runners that pick is sticky, so if it lands on a mirror
+          # that hasn't synced this version yet, every retry hits the same broken mirror and
+          # none of them help. Fall through a couple of direct, non-redirecting mirrors instead.
+          $candidates = @(
+            "https://download.documentfoundation.org/libreoffice/stable/$rel",
+            "https://mirrors.dotsrc.org/tdf/libreoffice/stable/$rel",
+            "https://download.nus.edu.sg/mirror/tdf/libreoffice/stable/$rel",
+            "https://mirror.transip.net/tdf-libreoffice/libreoffice/stable/$rel"
+          )
+          $out = "$env:RUNNER_TEMP\libreoffice.msi"
+          $ok = $false
+          foreach ($url in $candidates) {
+            Write-Host "Trying $url"
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $out -MaximumRetryCount 2 -RetryIntervalSec 5 -TimeoutSec 120
+              if ((Get-Item $out).Length -gt 100MB) { $ok = $true; break }
+              Write-Host "Downloaded file is suspiciously small, treating as a miss"
+            } catch {
+              Write-Host "Failed: $_"
+            }
+          }
+          if (-not $ok) { throw "Could not download LibreOffice installer from any mirror" }
 
       - name: Install LibreOffice silently
         shell: pwsh

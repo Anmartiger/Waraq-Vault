@@ -45,7 +45,12 @@ function cardHtml(r) {
           locParts.push('<span class="pg">p.' + page + '</span>');
           titleParts.push("Page " + page);
         }
-        if (para != null) {
+        // Pure-OCR PDFs (no real text layer anywhere in the file) get a
+        // paragraph number that's just a geometric line-grouping guess, not a
+        // real paragraph boundary — hidden here via r.pure_ocr. Hybrid PDFs
+        // and DOCX are untouched: r.pure_ocr is only ever true for scanned-
+        // only PDFs (see engine/pdf_engine.py's is_pure_ocr).
+        if (para != null && !r.pure_ocr) {
           locParts.push('<span class="paralabel">para ' + para + '</span>');
           titleParts.push("Paragraph " + para);
         }

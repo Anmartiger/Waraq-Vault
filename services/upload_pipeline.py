@@ -190,6 +190,9 @@ def process_upload_job(job_id: str, prepared: list, paged: bool) -> dict:
             kind = item["kind"]
             page_map = None
             para_map = None
+            # يبقى False دائماً لـ DOCX/TXT/صور — القيد الصريح: لا تأثير على DOCX
+            # مهما كانت آلية معالجتها الداخلية (حتى لو مرّت بتحويل PDF مؤقت).
+            pure_ocr = False
 
             def _page_progress(done, total, label):
                 if paged:
@@ -206,7 +209,7 @@ def process_upload_job(job_id: str, prepared: list, paged: bool) -> dict:
                 }
                 if "max_ocr_pages" in item:
                     pdf_kwargs["max_ocr_pages"] = item["max_ocr_pages"]
-                extracted_text, page_map, para_map = process_hybrid_pdf(
+                extracted_text, page_map, para_map, pure_ocr = process_hybrid_pdf(
                     item["bytes"], ocr_engine.run_ocr_boxes, **pdf_kwargs,
                 )
             elif kind == "docx":
@@ -219,7 +222,9 @@ def process_upload_job(job_id: str, prepared: list, paged: bool) -> dict:
                     try:
                         from engine.pdf_conversion import convert_docx_to_pdf_sync
                         pdf_bytes = convert_docx_to_pdf_sync(item["bytes"])
-                        extracted_text, page_map, para_map = process_hybrid_pdf(
+                        # pure_ocr مُتجاهَل عمداً هنا: DOCX يجب ألا يتأثر إطلاقاً،
+                        # حتى عندما تمر معالجته داخلياً بتحويل إلى PDF.
+                        extracted_text, page_map, para_map, _ = process_hybrid_pdf(
                             pdf_bytes, ocr_engine.run_ocr_boxes,
                             force_ocr=True,
                             progress=_page_progress,
@@ -257,7 +262,7 @@ def process_upload_job(job_id: str, prepared: list, paged: bool) -> dict:
 
             insert_document(name, item["stored_type"], extracted_text, item["hash"],
                             workspace=item["workspace"], page_map=page_map,
-                            stored_name=stored_name, para_map=para_map)
+                            stored_name=stored_name, para_map=para_map, pure_ocr=pure_ocr)
             jobs.set_item(job_id, idx, "indexed")
             indexed.append(name)
 

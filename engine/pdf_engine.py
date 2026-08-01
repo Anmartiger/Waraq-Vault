@@ -100,6 +100,7 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
     para_map = []
     doc = None
     ocr_pages_done = 0
+    native_pages_done = 0
 
     try:
         # 1. القراءة في الذاكرة العشوائية: لا مساس بالقرص الصلب
@@ -140,7 +141,6 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
                 # تجميع هندسي: إحداثيات الصناديق تبني الأسطر والفقرات بدقة
                 page_lines = [l for l in join_ocr(ocr_fn(img_array)).split("\n") if l.strip()]
                 ocr_pages_done += 1
-                is_ocr_page = True
 
                 # التدمير الإجباري للمتغيرات الضخمة لمنع اختناق الذاكرة
                 del pix
@@ -148,26 +148,30 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
             else:
                 # طبقة نصية موجودة: نأخذ الفقرات من تحليل التخطيط مباشرة
                 page_lines = page_paragraphs(page)
-                is_ocr_page = False
+                if page_lines:
+                    native_pages_done += 1
             if page_lines:
                 # دمج الأسطر المتجاورة في فقرات حقيقية — الفقرة وحدها تحصل على رقم،
                 # وليس كل سطر بمفرده. هذا يمنع التمزيق (para 2, para 5, para 8...).
+                # ترقيم الفقرات يبقى سليماً لكل صفحة (نصية أو OCR) — الملفات
+                # الهجينة لا تتأثر إطلاقاً؛ إخفاء المؤشر للمستندات المصوَّرة بالكامل
+                # قرار على مستوى المستند كله (is_pure_ocr أدناه)، لا لكل صفحة.
                 merged = smart_join(page_lines)
                 paragraphs = [p for p in merged.split("\n") if p.strip()]
                 page_map.append([len(lines) + 1, real_page_no])
-                # أرقام الفقرات ذات معنى فقط حين تأتي من طبقة نص حقيقية (كتل
-                # PyMuPDF الفعلية) — لصفحة OCR هي مجرد تجميع هندسي تخميني
-                # للأسطر بلا أي حدود فقرة حقيقية، فعرضها كـ"para N" يوحي بدقة
-                # غير موجودة. لا نُسجّلها إطلاقاً هنا بدل إخفائها لاحقاً في الواجهة.
-                if not is_ocr_page:
-                    for idx, block_text in enumerate(paragraphs, start=1):
-                        para_map.append([len(lines) + idx, real_page_no, idx])
+                for idx, block_text in enumerate(paragraphs, start=1):
+                    para_map.append([len(lines) + idx, real_page_no, idx])
                 lines.extend(paragraphs)
 
             if progress:
                 progress(done, total_selected, f"page {real_page_no} ({done}/{total_selected})")
 
-        return "\n".join(lines), page_map, para_map
+        # وثيقة "OCR بحت": كل صفحة فيها جاءت من التصوير الضوئي، بلا طبقة نص
+        # حقيقية إطلاقاً — عندها فقط تُخفى أرقام الفقرات في الواجهة، لأنها لا
+        # تعكس أي حدود فقرة حقيقية. أي صفحة نصية واحدة تكفي لإبقاء المستند
+        # "هجيناً" وترقيمه سليماً بالكامل، بما فيه صفحاته المصوَّرة.
+        is_pure_ocr = ocr_pages_done > 0 and native_pages_done == 0
+        return "\n".join(lines), page_map, para_map, is_pure_ocr
 
     except JobCancelled:
         # الإلغاء ليس خطأ — يُمرَّر كما هو ليتعامل معه نظام المهام

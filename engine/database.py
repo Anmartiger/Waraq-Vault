@@ -86,28 +86,36 @@ def init_db():
         con.execute("ALTER TABLE documents ADD COLUMN para_map TEXT")
         con.commit()
         print("ℹ️ Added para_map column — paragraph metadata per page stored cleanly.")
+    if "pure_ocr" not in existing_columns:
+        con.execute("ALTER TABLE documents ADD COLUMN pure_ocr INTEGER NOT NULL DEFAULT 0")
+        con.commit()
+        print("ℹ️ Added pure_ocr column — flags scanned-only PDFs so the UI can hide paragraph numbers.")
 
     con.close()
     print("✅ Database and FTS5 Schema initialized successfully.")
 
 def insert_document(filename: str, content_type: str, raw_text: str, file_hash: str = None,
                     workspace: str = "Default", page_map: list = None, stored_name: str = None,
-                    para_map: list = None):
+                    para_map: list = None, pure_ocr: bool = False):
     """إدخال مستند جديد إلى قاعدة البيانات.
     page_map: خريطة الصفحات [[أول_سطر, رقم_الصفحة], ...] — تُخزَّن خارج النص
     حتى لا تلوّث فهرس البحث بفواصل وهمية.
     para_map: خريطة الفقرات [[أول_سطر, رقم_الصفحة, رقم_الفقرة], ...] — تُخزَّن خارج النص
-    ورقم الفقرة يُعاد تعيينه إلى 1 مع كل صفحة جديدة."""
+    ورقم الفقرة يُعاد تعيينه إلى 1 مع كل صفحة جديدة.
+    pure_ocr: True فقط لملفات PDF مصوَّرة بالكامل (كل صفحاتها عبر OCR، بلا أي
+    طبقة نص حقيقية) — يُستخدم في الواجهة لإخفاء مؤشر رقم الفقرة، لأنه لا يعكس
+    حدود فقرة حقيقية لتلك الملفات. يبقى False دائماً لملفات DOCX والملفات
+    الهجينة (PDF فيه صفحات نصية حقيقية ولو صفحة واحدة)."""
     con = sqlite3.connect(DB_PATH)
     try:
         norm_text = normalize(raw_text)
         con.execute(
             "INSERT INTO documents (filename, content_type, raw_text, normalized_text, file_hash,"
-            " workspace, page_map, stored_name, para_map)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " workspace, page_map, stored_name, para_map, pure_ocr)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (filename, content_type, raw_text, norm_text, file_hash,
              workspace or "Default", json.dumps(page_map) if page_map else None,
-             stored_name, json.dumps(para_map) if para_map else None)
+             stored_name, json.dumps(para_map) if para_map else None, int(bool(pure_ocr)))
         )
         con.commit()
     finally:
@@ -340,7 +348,7 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None, workspac
 
     sql = """
         SELECT d.id, d.filename, d.content_type, d.raw_text, d.workspace, d.page_map,
-               d.para_map,
+               d.para_map, d.pure_ocr,
                (d.stored_name IS NOT NULL) AS openable,
                snippet(documents_fts, 0, '<b>', '</b>', '...', 15) as snippet,
                bm25(documents_fts) AS rank
@@ -382,6 +390,7 @@ def search_documents(query: str, limit: int = 20, doc_ids: list = None, workspac
                 "lang": _detect_lang(row["raw_text"]),
                 "unit": _unit_for(row["content_type"]),
                 "openable": bool(row["openable"]),
+                "pure_ocr": bool(row["pure_ocr"]),
             })
         return results
     finally:

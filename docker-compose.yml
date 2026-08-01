@@ -20,18 +20,18 @@ services:
     volumes:
       - ./storage:/app/storage
       - easyocr-models:/root/.EasyOCR
-    # Passes the host GPU into the container — without this, nvidia-smi and
-    # torch.cuda are both invisible in here no matter what's installed on the
-    # host, and engine/ocr_engine.py's own probe correctly (if unhelpfully)
-    # reports "no NVIDIA card" and falls back to CPU. Requires the NVIDIA
-    # Container Toolkit on the host (`nvidia-ctk`) — see README.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # GPU passthrough (optional): uncomment the block below to pass the host
+    # GPU into the container. Left off by default because Compose refuses to
+    # start this service at all if the reservation can't be satisfied — it's
+    # not a soft "fall back to CPU" like the app's own detection is. Needs the
+    # NVIDIA Container Toolkit installed on the host first — see README.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
     restart: unless-stopped
 
 networks:

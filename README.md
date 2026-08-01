@@ -172,9 +172,8 @@ Then open **<http://127.0.0.1:8000>**. A few things worth knowing:
 ### GPU passthrough for Docker
 
 By default the container can't see any GPU, even if the host has one — Docker isolates devices
-the same way it isolates everything else. `docker-compose.yml` already declares an NVIDIA device
-reservation on the `waraq` service, but that only *asks* Docker for a GPU; actually granting it
-needs the **NVIDIA Container Toolkit** installed on the host.
+the same way it isolates everything else, and `docker-compose.yml` runs CPU-only out of the box
+so the app works with zero extra setup. Turning the GPU on is opt-in and takes three steps:
 
 **1. Check the host driver works first** (unrelated to Docker — confirms the driver itself is fine):
 
@@ -199,7 +198,8 @@ sudo systemctl restart docker
 For other distros, see NVIDIA's [install
 guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
-**3. Rebuild and check:**
+**3. Uncomment the `deploy:` block** on the `waraq` service in `docker-compose.yml`, then rebuild
+and check:
 
 ```bash
 docker compose up -d --build
@@ -210,10 +210,10 @@ You want to see `NVIDIA detected: <your card> (...)` — not `لا توجد بط
 card"). If the card still isn't detected, re-check step 1 and step 2 in order; the toolkit can't
 pass through a driver that doesn't work on the host.
 
-> **Without the toolkit installed, `docker compose up` fails to start the container at all**
-> (it does not silently fall back to CPU) &mdash; the reservation in `docker-compose.yml` has
-> nothing to satisfy it. If you don't have an NVIDIA GPU, remove the `deploy:` block from the
-> `waraq` service in `docker-compose.yml` and the container runs on CPU normally.
+> **Only uncomment the `deploy:` block after the toolkit is installed.** With it uncommented but
+> the toolkit missing, `docker compose up` fails to start the container at all instead of falling
+> back to CPU — Compose can't satisfy the reservation and refuses to start the service. If that
+> happens, comment the block back out (or delete it) and rebuild.
 
 ### Desktop installer (Windows .msi / .exe)
 

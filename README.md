@@ -230,29 +230,6 @@ Gotenberg container. `engine/paths.py` is what makes the same codebase work unmo
 it's running from source, frozen, or in Docker &mdash; it resolves the bundled `ui/` folder and a
 writable per-user data directory correctly in each case.
 
-**Building it:**
-
-- **CI (recommended)** &mdash; push a `v*.*.*` tag, or trigger `.github/workflows/build-windows.yml`
-  manually from the Actions tab. It freezes the backend, silently installs and harvests
-  LibreOffice, and runs `cargo tauri build` on a `windows-latest` runner, producing both a
-  WiX `.msi` and an NSIS `.exe` as workflow artifacts.
-- **Locally on Windows** &mdash; you'll need Rust (`cargo install tauri-cli --version "^2"`) and a
-  Python 3.12 venv with `requirements.txt` + `requirements-desktop.txt` installed:
-
-  ```powershell
-  pyinstaller --noconfirm waraq-backend.spec
-  # copy dist\waraq-backend into src-tauri\backend\waraq-backend
-  # copy an installed LibreOffice's Program Files tree into src-tauri\libreoffice
-  cargo tauri build
-  ```
-
-  Installers land in `src-tauri/target/release/bundle/{msi,nsis}/`. Without the LibreOffice
-  resources present, the app still runs — DOCX&rarr;PDF conversion just falls back to the
-  inline-OCR path instead of failing.
-
-The backend binds a fixed local port (`47861`); if that's ever occupied by a leftover process,
-the splash screen reports a startup failure instead of hanging.
-
 ### GPU for source or venv installs
 
 *(Running in Docker instead? See [GPU passthrough for Docker](#gpu-passthrough-for-docker) above —

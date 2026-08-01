@@ -140,6 +140,7 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
                 # تجميع هندسي: إحداثيات الصناديق تبني الأسطر والفقرات بدقة
                 page_lines = [l for l in join_ocr(ocr_fn(img_array)).split("\n") if l.strip()]
                 ocr_pages_done += 1
+                is_ocr_page = True
 
                 # التدمير الإجباري للمتغيرات الضخمة لمنع اختناق الذاكرة
                 del pix
@@ -147,14 +148,20 @@ def process_hybrid_pdf(pdf_bytes: bytes, ocr_fn, force_ocr: bool = False, pages:
             else:
                 # طبقة نصية موجودة: نأخذ الفقرات من تحليل التخطيط مباشرة
                 page_lines = page_paragraphs(page)
+                is_ocr_page = False
             if page_lines:
                 # دمج الأسطر المتجاورة في فقرات حقيقية — الفقرة وحدها تحصل على رقم،
                 # وليس كل سطر بمفرده. هذا يمنع التمزيق (para 2, para 5, para 8...).
                 merged = smart_join(page_lines)
                 paragraphs = [p for p in merged.split("\n") if p.strip()]
                 page_map.append([len(lines) + 1, real_page_no])
-                for idx, block_text in enumerate(paragraphs, start=1):
-                    para_map.append([len(lines) + idx, real_page_no, idx])
+                # أرقام الفقرات ذات معنى فقط حين تأتي من طبقة نص حقيقية (كتل
+                # PyMuPDF الفعلية) — لصفحة OCR هي مجرد تجميع هندسي تخميني
+                # للأسطر بلا أي حدود فقرة حقيقية، فعرضها كـ"para N" يوحي بدقة
+                # غير موجودة. لا نُسجّلها إطلاقاً هنا بدل إخفائها لاحقاً في الواجهة.
+                if not is_ocr_page:
+                    for idx, block_text in enumerate(paragraphs, start=1):
+                        para_map.append([len(lines) + idx, real_page_no, idx])
                 lines.extend(paragraphs)
 
             if progress:

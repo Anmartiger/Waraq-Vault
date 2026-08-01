@@ -142,8 +142,24 @@ Then open **<http://127.0.0.1:8000>**. A few things worth knowing:
   download only happens once, not on every rebuild.
 - Gotenberg has no ports exposed to the host &mdash; it's reachable only from the `waraq` container
   over the internal `waraq-net` network, at `http://gotenberg:3000`.
-- GPU passthrough isn't wired up in `docker-compose.yml` by default; inside the container OCR
-  runs on CPU. For GPU-accelerated OCR, run the native venv setup above instead.
+- **GPU passthrough** is wired up in `docker-compose.yml` (an NVIDIA device reservation on the
+  `waraq` service), but it needs the [NVIDIA Container
+  Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+  installed on the host first &mdash; without it, `docker compose up` will fail to start the
+  container at all (not silently fall back to CPU). On a Debian/Ubuntu host:
+
+  ```bash
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+    sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+  sudo nvidia-ctk runtime configure --runtime=docker
+  sudo systemctl restart docker
+  ```
+
+  Then rebuild (`docker compose up -d --build`) and check `docker compose logs waraq` for
+  `NVIDIA detected: ...` instead of the "no NVIDIA card" warning.
 
 ### Desktop installer (Windows .msi / .exe)
 

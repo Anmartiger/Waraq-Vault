@@ -20,6 +20,18 @@ services:
     volumes:
       - ./storage:/app/storage
       - easyocr-models:/root/.EasyOCR
+    # Passes the host GPU into the container — without this, nvidia-smi and
+    # torch.cuda are both invisible in here no matter what's installed on the
+    # host, and engine/ocr_engine.py's own probe correctly (if unhelpfully)
+    # reports "no NVIDIA card" and falls back to CPU. Requires the NVIDIA
+    # Container Toolkit on the host (`nvidia-ctk`) — see README.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
 
 networks:

@@ -134,7 +134,7 @@ fn stop_backend(app: &tauri::AppHandle) {
 }
 
 const OCR_POLL_FAILURE_TIMEOUT_SECS: u64 = 60; // backend must answer again within this or it's dead
-const OCR_ABSOLUTE_TIMEOUT_SECS: u64 = 1800;   // 30 min hard cap regardless of activity
+const OCR_ABSOLUTE_TIMEOUT_SECS: u64 = 3600;   // 1 hour hard cap regardless of activity
 
 fn escape_js_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())

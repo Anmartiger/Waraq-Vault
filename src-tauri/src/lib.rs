@@ -133,14 +133,45 @@ fn stop_backend(app: &tauri::AppHandle) {
     }
 }
 
+const OCR_POLL_FAILURE_TIMEOUT_SECS: u64 = 60; // backend must answer again within this or it's dead
+const OCR_ABSOLUTE_TIMEOUT_SECS: u64 = 1800;   // 30 min hard cap regardless of activity
+
+fn escape_js_string(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+fn splash_show_error(window: &tauri::WebviewWindow, message: &str) {
+    let js = format!(
+        "window.waraqSetError && window.waraqSetError({});",
+        escape_js_string(message)
+    );
+    let _ = window.eval(&js);
+}
+
+fn splash_update_progress(window: &tauri::WebviewWindow, info: &serde_json::Value) {
+    let phase = info.get("phase").and_then(|v| v.as_str()).unwrap_or("");
+    let percent = info.get("percent").and_then(|v| v.as_f64());
+    let stage = info.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    let js = format!(
+        "window.waraqSetProgress && window.waraqSetProgress({}, {}, {});",
+        escape_js_string(phase),
+        percent.map(|p| p.to_string()).unwrap_or_else(|| "null".to_string()),
+        escape_js_string(stage),
+    );
+    let _ = window.eval(&js);
+}
+
 /// Polls the backend's own health endpoint (blocking, on a plain thread —
-/// simpler than pulling in async plumbing for one readiness loop) and either
-/// navigates the splash window to the running app or reports a failure.
+/// simpler than pulling in async plumbing for one readiness loop), then keeps
+/// polling OCR setup progress and reflecting it on the splash screen until the
+/// engine is actually ready — only then does it navigate to the real app, so
+/// the user never lands on a UI that silently can't process documents yet.
 fn wait_for_backend_then_show(app: tauri::AppHandle) {
     let status_url = format!("http://127.0.0.1:{BACKEND_PORT}/status");
-    let deadline = Instant::now() + Duration::from_secs(READY_TIMEOUT_SECS);
+    let progress_url = format!("http://127.0.0.1:{BACKEND_PORT}/ocr/progress");
 
-    let ready = loop {
+    let deadline = Instant::now() + Duration::from_secs(READY_TIMEOUT_SECS);
+    let server_up = loop {
         if let Ok(resp) = ureq::get(&status_url).timeout(Duration::from_secs(2)).call() {
             if resp.status() == 200 {
                 break true;
@@ -154,15 +185,55 @@ fn wait_for_backend_then_show(app: tauri::AppHandle) {
 
     let Some(window) = app.get_webview_window("main") else { return };
 
-    if ready {
-        if let Ok(url) = url::Url::parse(&format!("http://127.0.0.1:{BACKEND_PORT}/")) {
-            let _ = window.navigate(url);
-        }
-    } else {
-        let _ = window.eval(
-            "document.getElementById('error').style.display='block';\
-             document.getElementById('error').textContent = \
-             'تعذّر تشغيل الخادم المحلي. أغلق التطبيق وأعد فتحه، وتأكد من عدم وجود نسخة أخرى قيد التشغيل.';",
+    if !server_up {
+        splash_show_error(
+            &window,
+            "تعذّر تشغيل الخادم المحلي. أغلق التطبيق وأعد فتحه، وتأكد من عدم وجود نسخة أخرى قيد التشغيل.",
         );
+        return;
+    }
+
+    let start = Instant::now();
+    let mut last_ok_at = Instant::now();
+    let ocr_ready = loop {
+        match ureq::get(&progress_url).timeout(Duration::from_secs(5)).call() {
+            Ok(resp) if resp.status() == 200 => {
+                last_ok_at = Instant::now();
+                if let Ok(body) = resp.into_string() {
+                    if let Ok(info) = serde_json::from_str::<serde_json::Value>(&body) {
+                        let phase = info.get("phase").and_then(|v| v.as_str()).unwrap_or("");
+                        if phase == "ready" {
+                            break true;
+                        }
+                        if phase == "error" {
+                            let msg = info.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                            splash_show_error(&window, &format!("تعذّر تجهيز محرك OCR: {msg}"));
+                            return;
+                        }
+                        splash_update_progress(&window, &info);
+                    }
+                }
+            }
+            _ => {}
+        }
+        let now = Instant::now();
+        if now.duration_since(last_ok_at) >= Duration::from_secs(OCR_POLL_FAILURE_TIMEOUT_SECS)
+            || now.duration_since(start) >= Duration::from_secs(OCR_ABSOLUTE_TIMEOUT_SECS)
+        {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    };
+
+    if !ocr_ready {
+        splash_show_error(
+            &window,
+            "تعذّر تشغيل الخادم المحلي. أغلق التطبيق وأعد فتحه، وتأكد من عدم وجود نسخة أخرى قيد التشغيل.",
+        );
+        return;
+    }
+
+    if let Ok(url) = url::Url::parse(&format!("http://127.0.0.1:{BACKEND_PORT}/")) {
+        let _ = window.navigate(url);
     }
 }

@@ -128,19 +128,12 @@ def load_progress() -> dict:
     with _load_state_lock:
         return dict(_load_state)
 
-def _download_progress_hook_factory(prefix="", suffix="", decimals=1, length=100, fill="█"):
-    """
-    بديل عن easyocr.utils.printProgressBar يُستدعى بنفس التوقيع تماماً (تُستدعى
-    عبر download_and_unzip الداخلية في مكتبة easyocr)، لكنه يحدّث حالتنا بدل
-    الطباعة على الطرفية — هذا ما يمنحنا نسبة تنزيل حقيقية بدل مؤشر غامض.
-    """
-    def _hook(count, block_size, total_size):
-        try:
-            pct = min(100.0, round(count * block_size / total_size * 100, 1)) if total_size else None
-        except ZeroDivisionError:
-            pct = None
-        _set_load_state("downloading", pct)
-    return _hook
+
+# ترتيب تنزيل easyocr الفعلي: نموذج الكشف (detection) أولاً عبر
+# getDetectorPath()، ثم نموذج التعرف (recognition) — انظر Reader.__init__ في
+# easyocr/easyocr.py. لا توجد طريقة موثّقة لمعرفة أي نموذج قيد التنزيل حالياً
+# غير ترتيب النداءات نفسه، لذا نتتبعه برقم تسلسلي بدل تخمين اسم الملف.
+_MODEL_STAGES = ("detection", "recognition")
 
 def _ensure_reader():
     """
@@ -167,12 +160,39 @@ def _ensure_reader():
                 if NVIDIA["present"] and not TORCH["built_with_cuda"]:
                     logger.warning(f"👉 {_cuda_install_hint()}")
 
-        # يعترض تقرير تقدّم easyocr الداخلي (مُعطَّل أصلاً لأننا نبني بـ verbose=False)
-        # ليحدّث حالتنا بدل الطباعة — لا يفعل شيئاً إن كانت النماذج محمّلة مسبقاً على
-        # القرص، لأن download_and_unzip لا يُستدعى إطلاقاً في تلك الحالة.
+        # يعترض تنزيل easyocr الداخلي على مستويين ليعطينا تقدّماً دقيقاً بدل مؤشر
+        # غامض: download_and_unzip (مُستدعاة من easyocr.easyocr، وتُستورد إلى
+        # مساحة اسمها الخاصة — لذا التصحيح هناك تحديداً) لمعرفة أي نموذج قيد
+        # التنزيل الآن، وprintProgressBar (تُقرأ من مساحة اسم easyocr.utils نفسها
+        # داخل جسم download_and_unzip بغض النظر عمن استدعاها) للنسبة المئوية
+        # الفعلية بدل الطباعة على طرفية لا يراها أحد. لا يفعل أي منهما شيئاً إن
+        # كانت النماذج محمّلة مسبقاً على القرص، لأن download_and_unzip لا يُستدعى
+        # إطلاقاً في تلك الحالة.
+        import easyocr.easyocr as _eo_reader_mod
         import easyocr.utils as _eo_utils
+
+        _original_download = _eo_utils.download_and_unzip
         _original_progress_bar = _eo_utils.printProgressBar
-        _eo_utils.printProgressBar = _download_progress_hook_factory
+        _stage = {"name": ""}
+        _stage_index = {"i": 0}
+
+        def _progress_hook_factory(prefix="", suffix="", decimals=1, length=100, fill="█"):
+            def _hook(count, block_size, total_size):
+                try:
+                    pct = min(100.0, round(count * block_size / total_size * 100, 1)) if total_size else None
+                except ZeroDivisionError:
+                    pct = None
+                _set_load_state("downloading", pct, _stage["name"])
+            return _hook
+
+        def _wrapped_download(url, filename, model_storage_directory, verbose=True):
+            _stage["name"] = _MODEL_STAGES[min(_stage_index["i"], len(_MODEL_STAGES) - 1)]
+            _stage_index["i"] += 1
+            _set_load_state("downloading", 0.0, _stage["name"])
+            return _original_download(url, filename, model_storage_directory, verbose)
+
+        _eo_reader_mod.download_and_unzip = _wrapped_download
+        _eo_utils.printProgressBar = _progress_hook_factory
         try:
             try:
                 try:
@@ -194,6 +214,7 @@ def _ensure_reader():
                 _set_load_state("error", None, str(e))
                 raise
         finally:
+            _eo_reader_mod.download_and_unzip = _original_download
             _eo_utils.printProgressBar = _original_progress_bar
 
         reader = built

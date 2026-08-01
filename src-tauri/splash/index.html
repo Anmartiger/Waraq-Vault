@@ -14,7 +14,7 @@
     align-items: center;
     justify-content: center;
   }
-  .box { text-align: center; }
+  .box { text-align: center; width: 320px; }
   .spinner {
     width: 40px;
     height: 40px;
@@ -25,16 +25,125 @@
     animation: spin 0.9s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  #status { font-size: 14px; opacity: 0.75; margin-top: 8px; }
-  #error { color: #e08a6b; display: none; font-size: 13px; max-width: 420px; }
+
+  #stage { font-size: 13.5px; min-height: 18px; margin-top: 14px; }
+  #percent { font-size: 12px; opacity: 0.7; margin-top: 2px; min-height: 15px; }
+
+  .track {
+    height: 7px;
+    border-radius: 999px;
+    background: rgba(244, 234, 217, 0.14);
+    overflow: hidden;
+    margin-top: 10px;
+  }
+  #bar {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #d8b96a, #c79f4a);
+    transition: width .3s ease;
+  }
+  #bar.indet {
+    width: 100%;
+    background: repeating-linear-gradient(45deg,
+      rgba(216, 185, 106, 0.55), rgba(216, 185, 106, 0.55) 10px,
+      #d8b96a #d8b96a 20px);
+    animation: slide 1s linear infinite;
+  }
+  @keyframes slide { from { background-position: 0 0; } to { background-position: 28px 0; } }
+
+  #status { font-size: 12.5px; opacity: 0.6; margin-top: 16px; }
+
+  #hint {
+    font-size: 12px;
+    opacity: 0.55;
+    margin-top: 10px;
+    min-height: 16px;
+    transition: opacity .25s ease;
+  }
+
+  #error { color: #e08a6b; display: none; font-size: 13px; margin-top: 14px; }
 </style>
 </head>
 <body>
   <div class="box">
     <div class="spinner"></div>
     <div>جارٍ تشغيل WaraqVault…</div>
+
+    <div id="stage">جارٍ التحقق من الخادم المحلي…</div>
+    <div id="percent"></div>
+    <div class="track"><div id="bar" class="indet"></div></div>
+
     <div id="status">التشغيل الأول يحتاج اتصالاً بالإنترنت لتنزيل نماذج OCR</div>
+    <div id="hint"></div>
     <div id="error"></div>
   </div>
+
+<script>
+  // Stage keys come straight from engine/ocr_engine.py's load_progress() —
+  // "downloading"/"loading"/"pending", with the model name ("detection" /
+  // "recognition") in the message field while downloading. Mapped here
+  // instead of on the Python side so this stays presentation-only.
+  var STAGE_LABELS = {
+    "pending": "جارٍ التحضير…",
+    "loading": "جارٍ تحميل محرك OCR في الذاكرة…",
+    "downloading": "جارٍ تنزيل نماذج OCR…",
+    "downloading:detection": "جارٍ تنزيل نماذج الكشف عن النص…",
+    "downloading:recognition": "جارٍ تنزيل نماذج التعرف على الأحرف…"
+  };
+
+  var HINTS = [
+    "لا يُرفع أي ملف إلى الإنترنت — كل شيء يبقى على جهازك.",
+    "يتعرّف WaraqVault على اختلافات كتابة الكلمة العربية نفسها تلقائياً (الهمزة، التاء المربوطة...).",
+    "يمكنك التبديل بين المعالجة على GPU أو CPU من شريط الأدوات في أي وقت.",
+    "بعد هذا التشغيل الأول، لن تحتاج اتصالاً بالإنترنت مرة أخرى.",
+    "يمكنك تنظيم مستنداتك في مساحات عمل (Workspaces) منفصلة.",
+    "النتائج تعرض رقم الصفحة والسطر مع تمييز الكلمة المطابقة داخل السياق."
+  ];
+
+  var hintIndex = 0;
+  function cycleHint() {
+    var el = document.getElementById("hint");
+    if (!el) return;
+    el.style.opacity = 0;
+    setTimeout(function () {
+      el.textContent = "💡 " + HINTS[hintIndex % HINTS.length];
+      hintIndex++;
+      el.style.opacity = 0.55;
+    }, 250);
+  }
+  cycleHint();
+  setInterval(cycleHint, 4500);
+
+  // Called from the Rust shell (src-tauri/src/lib.rs) as it polls the
+  // backend's /ocr/progress endpoint — this file never talks to the backend
+  // directly, avoiding any cross-origin fetch complexity from a static page.
+  window.waraqSetProgress = function (phase, percent, stage) {
+    var bar = document.getElementById("bar");
+    var stageEl = document.getElementById("stage");
+    var pctEl = document.getElementById("percent");
+    if (!bar || !stageEl || !pctEl) return;
+
+    var key = (phase === "downloading" && stage) ? (phase + ":" + stage) : phase;
+    stageEl.textContent = STAGE_LABELS[key] || STAGE_LABELS[phase] || "";
+
+    if (typeof percent === "number") {
+      bar.classList.remove("indet");
+      bar.style.width = percent + "%";
+      pctEl.textContent = Math.round(percent) + "%";
+    } else {
+      bar.classList.add("indet");
+      bar.style.width = "100%";
+      pctEl.textContent = "";
+    }
+  };
+
+  window.waraqSetError = function (message) {
+    var err = document.getElementById("error");
+    if (!err) return;
+    err.style.display = "block";
+    err.textContent = message;
+  };
+</script>
 </body>
 </html>

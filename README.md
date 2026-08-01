@@ -16,6 +16,18 @@
 
 ---
 
+### Contents
+
+[The idea](#the-idea) &middot;
+[Getting started](#getting-started) &middot;
+[GPU passthrough for Docker](#gpu-passthrough-for-docker) &middot;
+[GPU for source or venv installs](#gpu-for-source-or-venv-installs) &middot;
+[How it works](#how-it-works) &middot;
+[API](#api) &middot;
+[Project structure](#project-structure) &middot;
+[Troubleshooting](#notes--troubleshooting) &middot;
+[Privacy](#privacy)
+
 ## The idea
 
 WaraqVault turns a scattered pile of files &mdash; PDFs, Word documents, and scanned images spread
@@ -96,7 +108,20 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 > Files with **no extension** are fine: the server identifies them from their actual content
 > (magic bytes for PDF/DOCX/images, text sniffing for plain text).
 
-## Quickstart
+## Getting started
+
+Three ways to run WaraqVault — pick whichever fits:
+
+| | Best for | Setup effort | GPU support |
+|---|---|---|---|
+| **[Source / venv](#run-from-source)** | Development, and the only path with easy GPU acceleration | Python venv + `pip install` | Straightforward |
+| **[Docker](#docker-alternative-to-the-venv-setup)** | No local Python install, isolated & reproducible | `docker compose up` | Needs the [NVIDIA Container Toolkit](#gpu-passthrough-for-docker) |
+| **[Windows installer](#desktop-installer-windows-msi-exe)** | Non-technical end users on Windows | Download & run `.msi`/`.exe` | Whatever the machine's Python/PyTorch stack provides |
+
+All three run the exact same engine and produce the exact same search results — the only
+difference is packaging.
+
+### Run from source
 
 > **Python 3.10 – 3.12.** Newer versions (3.13/3.14) do not yet have PyTorch wheels, which EasyOCR
 > needs, and the install will fail while trying to build from source.
@@ -142,24 +167,53 @@ Then open **<http://127.0.0.1:8000>**. A few things worth knowing:
   download only happens once, not on every rebuild.
 - Gotenberg has no ports exposed to the host &mdash; it's reachable only from the `waraq` container
   over the internal `waraq-net` network, at `http://gotenberg:3000`.
-- **GPU passthrough** is wired up in `docker-compose.yml` (an NVIDIA device reservation on the
-  `waraq` service), but it needs the [NVIDIA Container
-  Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-  installed on the host first &mdash; without it, `docker compose up` will fail to start the
-  container at all (not silently fall back to CPU). On a Debian/Ubuntu host:
+- GPU passthrough needs one extra step on the host first &mdash; see the next section.
 
-  ```bash
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-  curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-    sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
-  sudo nvidia-ctk runtime configure --runtime=docker
-  sudo systemctl restart docker
-  ```
+### GPU passthrough for Docker
 
-  Then rebuild (`docker compose up -d --build`) and check `docker compose logs waraq` for
-  `NVIDIA detected: ...` instead of the "no NVIDIA card" warning.
+By default the container can't see any GPU, even if the host has one — Docker isolates devices
+the same way it isolates everything else. `docker-compose.yml` already declares an NVIDIA device
+reservation on the `waraq` service, but that only *asks* Docker for a GPU; actually granting it
+needs the **NVIDIA Container Toolkit** installed on the host.
+
+**1. Check the host driver works first** (unrelated to Docker — confirms the driver itself is fine):
+
+```bash
+nvidia-smi
+```
+
+If that fails or shows no card, fix the host driver before touching Docker at all.
+
+**2. Install the NVIDIA Container Toolkit** (Debian/Ubuntu host):
+
+```bash
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+For other distros, see NVIDIA's [install
+guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+**3. Rebuild and check:**
+
+```bash
+docker compose up -d --build
+docker compose logs waraq | grep -i nvidia
+```
+
+You want to see `NVIDIA detected: <your card> (...)` — not `لا توجد بطاقة NVIDIA` ("no NVIDIA
+card"). If the card still isn't detected, re-check step 1 and step 2 in order; the toolkit can't
+pass through a driver that doesn't work on the host.
+
+> **Without the toolkit installed, `docker compose up` fails to start the container at all**
+> (it does not silently fall back to CPU) &mdash; the reservation in `docker-compose.yml` has
+> nothing to satisfy it. If you don't have an NVIDIA GPU, remove the `deploy:` block from the
+> `waraq` service in `docker-compose.yml` and the container runs on CPU normally.
 
 ### Desktop installer (Windows .msi / .exe)
 
@@ -199,7 +253,11 @@ writable per-user data directory correctly in each case.
 The backend binds a fixed local port (`47861`); if that's ever occupied by a leftover process,
 the splash screen reports a startup failure instead of hanging.
 
-### Enabling the GPU (NVIDIA)
+### GPU for source or venv installs
+
+*(Running in Docker instead? See [GPU passthrough for Docker](#gpu-passthrough-for-docker) above —
+this section is for the source/venv and desktop-installer paths, where the app talks to PyTorch
+directly.)*
 
 OCR runs **10–30× faster** on a CUDA GPU, and the app picks one up automatically. The catch is
 PyTorch itself:
@@ -457,8 +515,6 @@ Two lessons already visible: halving the zoom is **3× faster but loses 13% of t
 exactly the trade the harness exists to catch; and fewer threads was *slower*, so thread tuning
 needs measuring rather than guessing. Benchmark on **real Arabic scans with `--pages 5`+**;
 single-page runs vary by ~20% and English text is not representative.
-
-
 
 ### Ground rules
 

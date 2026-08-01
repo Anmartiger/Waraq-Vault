@@ -53,47 +53,28 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 
 ## What it does today
 
-- **Dark &amp; light modes** &mdash; a vault-at-night theme and a daylight reading-room theme,
-  toggled from the header and remembered between visits.
-- **File manager sidebar** &mdash; browse the whole archive, filter by workspace, type or name,
-  select many files at once and delete them in one action.
-- **Workspaces** &mdash; group documents on upload (a flat tag, not nested folders), search inside
-  one group, or delete a whole group in a single shot.
-- **Drag-and-drop ingest** &mdash; drop files (or click) and they are read, indexed and searchable.
-- **Batch upload that matches the real cost** &mdash; up to **50** PDF/DOCX/TXT files at once
-  (text extraction is cheap), up to **5 images** (OCR is not), with a live status per file.
-- **Background processing with real progress** &mdash; uploads return immediately; a progress bar
-  advances on actual per-page / per-image completion events, and a **Cancel** button stops
-  the job at the next safe point. The UI never freezes, whatever the file size.
-- **GPU auto-detection** &mdash; OCR runs on the GPU when one is present; otherwise it falls back
-  to a bounded CPU mode (cores&nbsp;&minus;&nbsp;1 threads) that keeps the app responsive. GPU failures
-  at runtime fall back to CPU automatically &mdash; never a crash.
-- **Live search** &mdash; results update as you type (300&nbsp;ms debounce, minimum 2 characters).
-- **Every match, not just one** &mdash; each document lists *all* of its matching lines, not a single snippet.
-- **Honest locations** &mdash; PDF and Word hits are labelled by **page** (`p.12`), text files by
-  **line** (`L340`), and image hits carry no position at all. Nothing is ever invented: a number
-  only appears where you can actually go and find it.
-- **Arabic that actually matches** &mdash; searching `تخطيطا` also finds `وتخطيطا` / `بالتخطيط`
-  (attached conjunctions, prepositions and the definite article), while short words like
-  `في` and `مع` match only as whole words &mdash; no more highlights inside unrelated words.
-- **Language badges** &mdash; each result is tagged AR, EN or AR·EN from its real content.
-- **Search inside one file** &mdash; a scope filter restricts search to a chosen document; clearing
-  it restores full-archive search.
-- **Delete from the archive** &mdash; remove a document (with confirmation); its search-index
-  entries go with it, no orphaned rows.
-- **No page limit &mdash; but large scans ask first.** A PDF of any length is accepted. Past 5 scanned
-  pages a dialog shows a time estimate for *your* hardware and offers three choices: all pages, a
-  **page range**, or **specific pages** &mdash; with the estimate updating live as you narrow it down.
-  Nothing is ever refused for being too big.
-- **Open the original** &mdash; every indexed document keeps a local copy, openable straight from the
-  file manager, the details panel, or any search result.
-- **Duplicate detection** &mdash; re-uploading a known file prompts you to *overwrite* or *cancel*,
-  before any processing starts; renamed copies are caught by content hash.
-- **Force OCR** &mdash; a toggle for hybrid PDFs (text + embedded scans) that processes every page
-  as an image, and reads images embedded inside DOCX files.
-- **Honest file typing** &mdash; a file's real content signature must match its extension, so an
-  ODT renamed to `.pdf` is rejected with a clear message instead of poisoning the index.
-- **RTL-aware UI** &mdash; each result line picks its own direction, so Arabic and English both read correctly.
+- **Arabic that actually matches** &mdash; spelling variants (hamza, tāʾ marbūṭa, diacritics) and
+  attached prefixes (`تخطيطا` ↔ `وتخطيطا`) are normalized at index **and** query time; short
+  words like `في` match whole only, so they never light up inside unrelated words.
+- **Every match, honestly located** &mdash; live search-as-you-type, returning *every* matching
+  line (not just a snippet), each tagged with a real page or line number &mdash; never invented
+  &mdash; and highlighted. Language badges (AR / EN / AR·EN) come from real content, not filenames.
+- **Drag-and-drop ingest** &mdash; up to 50 PDF/DOCX/TXT files or 5 images per batch, processed in
+  the background with real per-file progress and a **Cancel** button; the UI never freezes.
+- **No page limit, but you choose the cost** &mdash; any PDF length is accepted; past 5 scanned
+  pages, pick all pages, a range, or specific ones, with a live time estimate first. **Force OCR**
+  handles hybrid PDFs and DOCX-embedded images the same way.
+- **GPU-aware OCR** &mdash; auto-detects a CUDA GPU, falls back to CPU cleanly (including mid-job
+  on out-of-memory), switchable anytime from the header.
+- **File manager & workspaces** &mdash; browse, filter, multi-select and bulk-delete; group
+  documents into workspaces and scope a search to one file or one workspace.
+- **Duplicate & type safety** &mdash; re-uploading a known file (even renamed &mdash; caught by
+  content hash) prompts *overwrite* or *cancel*; a file's real content must match its extension,
+  not just its name.
+- **Open the original** &mdash; every indexed document keeps a local copy, one click away from
+  the file manager, details panel, or any search result.
+- **Dark / light themes, full RTL support** &mdash; remembered between visits; every result line
+  reads in its own correct direction.
 
 ## Supported formats
 
@@ -110,16 +91,12 @@ This is the part existing tools consistently get wrong &mdash; and the reason Wa
 
 ## Getting started
 
-Three ways to run WaraqVault — pick whichever fits:
+Two ways to run WaraqVault — same engine, same results, either way:
 
-| | Best for | Setup effort | GPU support |
+| | Best for | Setup | GPU support |
 |---|---|---|---|
-| **[Source / venv](#run-from-source)** | Development, and the only path with easy GPU acceleration | Python venv + `pip install` | Straightforward |
-| **[Docker](#docker-alternative-to-the-venv-setup)** | No local Python install, isolated & reproducible | `docker compose up` | Needs the [NVIDIA Container Toolkit](#gpu-passthrough-for-docker) |
-| **[Windows installer](#desktop-installer-windows-msi-exe)** | Non-technical end users on Windows | Download & run `.msi`/`.exe` | Whatever the machine's Python/PyTorch stack provides |
-
-All three run the exact same engine and produce the exact same search results — the only
-difference is packaging.
+| **[Source / venv](#run-from-source)** | Development, and the easiest path to GPU acceleration | Python venv + `pip install` | Straightforward |
+| **[Docker](#docker-alternative-to-the-venv-setup)** | No local Python install, isolated & reproducible | `docker compose up` | Opt-in, needs the [NVIDIA Container Toolkit](#gpu-passthrough-for-docker) |
 
 ### Run from source
 
@@ -171,19 +148,22 @@ Then open **<http://127.0.0.1:8000>**. A few things worth knowing:
 
 ### GPU passthrough for Docker
 
-By default the container can't see any GPU, even if the host has one — Docker isolates devices
-the same way it isolates everything else, and `docker-compose.yml` runs CPU-only out of the box
-so the app works with zero extra setup. Turning the GPU on is opt-in and takes three steps:
+Docker isolates devices like everything else, so the container can't see a GPU by default even
+if the host has one &mdash; `docker-compose.yml` ships **CPU-only, zero extra setup**. Turning the
+GPU on is opt-in, three steps:
 
-**1. Check the host driver works first** (unrelated to Docker — confirms the driver itself is fine):
+**1. Confirm the host driver works** (unrelated to Docker):
 
 ```bash
 nvidia-smi
 ```
 
-If that fails or shows no card, fix the host driver before touching Docker at all.
+No card, or an error? Fix that first &mdash; Docker can't pass through a driver that doesn't work.
 
-**2. Install the NVIDIA Container Toolkit** (Debian/Ubuntu host):
+**2. Install the NVIDIA Container Toolkit.**
+
+<details>
+<summary>Debian/Ubuntu install commands</summary>
 
 ```bash
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
@@ -197,44 +177,26 @@ sudo systemctl restart docker
 
 For other distros, see NVIDIA's [install
 guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+</details>
 
-**3. Uncomment the `deploy:` block** on the `waraq` service in `docker-compose.yml`, then rebuild
-and check:
+**3. Uncomment the `deploy:` block** on the `waraq` service in `docker-compose.yml`, then rebuild:
 
 ```bash
 docker compose up -d --build
 docker compose logs waraq | grep -i nvidia
 ```
 
-You want to see `NVIDIA detected: <your card> (...)` — not `لا توجد بطاقة NVIDIA` ("no NVIDIA
-card"). If the card still isn't detected, re-check step 1 and step 2 in order; the toolkit can't
-pass through a driver that doesn't work on the host.
+You want `NVIDIA detected: <your card> (...)`, not `لا توجد بطاقة NVIDIA` ("no NVIDIA card").
 
-> **Only uncomment the `deploy:` block after the toolkit is installed.** With it uncommented but
-> the toolkit missing, `docker compose up` fails to start the container at all instead of falling
-> back to CPU — Compose can't satisfy the reservation and refuses to start the service. If that
-> happens, comment the block back out (or delete it) and rebuild.
-
-### Desktop installer (Windows .msi / .exe)
-
-WaraqVault can also ship as a self-contained Windows desktop app, built with
-[Tauri](https://tauri.app). The Tauri shell spawns the FastAPI backend (frozen into a standalone
-executable with PyInstaller) as a background process, waits for it to report ready, then opens a
-window pointed at it &mdash; same app, no browser, no manual setup, no internet required after
-install (EasyOCR's first-run model download still needs one).
-
-Because Gotenberg is Docker-only, the desktop build swaps it for a bundled portable LibreOffice
-and does DOCX&rarr;PDF conversion by shelling out to `soffice --headless` directly
-(`engine/libreoffice_client.py`, selected via `PDF_ENGINE=libreoffice`) instead of talking to a
-Gotenberg container. `engine/paths.py` is what makes the same codebase work unmodified whether
-it's running from source, frozen, or in Docker &mdash; it resolves the bundled `ui/` folder and a
-writable per-user data directory correctly in each case.
+> **Uncomment `deploy:` only after the toolkit is installed.** With the block active but the
+> toolkit missing, Compose can't satisfy the GPU reservation and refuses to start the container
+> at all &mdash; it will not quietly fall back to CPU. If that happens, comment the block back out
+> and rebuild.
 
 ### GPU for source or venv installs
 
 *(Running in Docker instead? See [GPU passthrough for Docker](#gpu-passthrough-for-docker) above —
-this section is for the source/venv and desktop-installer paths, where the app talks to PyTorch
-directly.)*
+this section is for the source/venv path, where the app talks to PyTorch directly.)*
 
 OCR runs **10–30× faster** on a CUDA GPU, and the app picks one up automatically. The catch is
 PyTorch itself:
@@ -251,17 +213,16 @@ The app detects this exact situation and says so: the header chip turns into
 ```
 
 Pick the CUDA build that matches your card &mdash; **RTX 50-series (Blackwell) needs cu128 or newer**;
-`cu126` will install but cannot run on those cards. Check what exists at
-<https://download.pytorch.org/whl/>. On Linux use `.venv/bin/python` and, if the default PyPI
-wheel already reports CUDA, no reinstall is needed at all.
+`cu126` installs but won't run on those cards. Full list at <https://download.pytorch.org/whl/>.
+On Linux, use `.venv/bin/python`; if the default PyPI wheel already reports CUDA, skip this step.
 
-Verify afterwards:
+Verify, then restart the server &mdash; the chip should read **⚡ GPU (…)**:
 
 ```bash
 .venv/Scripts/python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-You want `True` &mdash; then restart the server and the chip should read **⚡ GPU (…)**.
+You want `True`.
 
 ### Choosing the hardware
 
@@ -445,9 +406,8 @@ or `"filename"` when the name matches but the contents changed.
   document written by another tool, with no page breaks of its own, shows line numbers only &mdash;
   deliberately, rather than guessing a page and sending you to the wrong place.
 
-## OCR development &amp; benchmarking
-
-Notes for whoever is working on the recognition pipeline.
+<details>
+<summary><b>OCR development &amp; benchmarking</b> &mdash; notes for whoever is working on the recognition pipeline</summary>
 
 ### The seams
 
@@ -521,6 +481,8 @@ single-page runs vary by ~20% and English text is not representative.
   (134 checks). It stubs `engine.ocr_engine` in `sys.modules`, so it runs in seconds without
   loading any model &mdash; meaning it validates *routing, indexing and search*, not recognition
   quality. Recognition quality is what the benchmark harness is for.
+
+</details>
 
 ## Privacy
 

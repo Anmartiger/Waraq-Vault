@@ -9,7 +9,13 @@ import os
 
 from engine.paths import data_dir
 
-STORAGE_DIR = data_dir()
+# Its own subdirectory, deliberately — prune() below sweeps this entire
+# directory and deletes anything not a known document copy. data_dir() also
+# holds waraq.db (engine/database.py) and, in the desktop build, backend.log
+# (src-tauri/src/lib.rs) — sharing that directory meant prune() had already
+# deleted a live waraq.db as an "orphan" file the first time anyone deleted a
+# document. Never point this at a directory that holds anything else.
+STORAGE_DIR = data_dir() / "originals"
 
 # امتدادات نسمح بها في اسم النسخة المحفوظة (الاسم الحقيقي يبقى في قاعدة البيانات)
 _MAX_EXT = 12

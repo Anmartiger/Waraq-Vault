@@ -89,11 +89,21 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
         &["libreoffice/program/soffice.exe", "libreoffice/program/soffice"],
     );
 
+    // Piped stdio that nobody reads is a deadlock waiting to happen: once the OS
+    // pipe buffer fills (uvicorn's access log alone gets there over time), the
+    // child blocks on its next write and the whole backend freezes — surfacing
+    // to the user as "can't connect to the server" long after it looked fine.
+    // Writing straight to a file has no such buffer limit, and doubles as a real
+    // log to diagnose issues from instead of guessing.
+    let log_path = data_dir.join("backend.log");
+    let stdout_log = std::fs::File::create(&log_path)?;
+    let stderr_log = stdout_log.try_clone()?;
+
     let mut cmd = Command::new(&backend_exe);
     cmd.env("WARAQ_PORT", BACKEND_PORT.to_string())
         .env("WARAQ_DATA_DIR", &data_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log));
 
     if let Some(soffice_path) = soffice {
         cmd.env("SOFFICE_PATH", soffice_path);

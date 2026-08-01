@@ -102,6 +102,15 @@ fn spawn_backend(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error
     let mut cmd = Command::new(&backend_exe);
     cmd.env("WARAQ_PORT", BACKEND_PORT.to_string())
         .env("WARAQ_DATA_DIR", &data_dir)
+        // Python picks its stdio encoding from the console it's attached to;
+        // redirected to a plain file (see above) on Windows that defaults to
+        // the ANSI codepage (cp1252), which can't encode the emoji this
+        // codebase prints/logs everywhere (✅, ⏳, ...) — crashing on the very
+        // first one instead of writing it. Forcing UTF-8 here covers every
+        // print/log call from interpreter startup on, not just ones after
+        // some later reconfiguration point in the app's own code.
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
         .stdout(Stdio::from(stdout_log))
         .stderr(Stdio::from(stderr_log));
 
